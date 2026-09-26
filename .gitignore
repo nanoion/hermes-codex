@@ -1,0 +1,37 @@
+# Local environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local Hermes and runtime state
+.hermes/
+codex-worker/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+
+# Generated/private verification artifacts
+evidence/
+dist/
+PROGRESS.md
+REFERENCE_BASELINE.json
+tests/verify_candidate.py
+coverage/
+htmlcov/
+.coverage
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+config.local.*
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

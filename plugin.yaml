@@ -1,0 +1,44 @@
+name: hermes-codex
+version: "0.1.0"
+description: Scoped Codex SDK worker orchestration for Hermes Agent
+manifest_version: 2
+api_version: 1
+provides_tools:
+  - codex
+config_schema:
+  allowed_roots:
+    type: list
+    default: []
+    description: Absolute workspace roots allowed for Codex assignments
+  attachment_roots:
+    type: list
+    default: []
+    description: Absolute trusted attachment ingress roots
+  allow_full_access:
+    type: bool
+    default: false
+    description: Operator availability gate; does not authorize any assignment
+  desktop_command:
+    type: list
+    default: []
+    description: Trusted absolute desktop launcher argv
+  login_command:
+    type: list
+    default: []
+    description: Trusted absolute local browser launcher argv
+  device_login_command:
+    type: list
+    default: []
+    description: Trusted absolute graphical dialog argv reading stdin
+  model_variants:
+    type: dict
+    default: {}
+    description: Named model, effort and service-tier presets
+  provider_profiles:
+    type: dict
+    default: {}
+    description: Named native Codex provider profiles
+  host_account_homes:
+    type: dict
+    default: {}
+    description: Approved aliases mapped to dedicated absolute Codex homes
