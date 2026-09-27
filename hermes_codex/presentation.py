@@ -9,9 +9,9 @@ from urllib.parse import quote
 from .state import Conflict
 
 TITLES = {
-    'en': {'result': 'Result', 'status': 'Status', 'plan': 'Plan — show / continue / revise / cancel', 'interaction': 'Decision required — inspect details before deciding', 'control': 'Control outcome', 'queue': 'Queued guidance', 'history': 'Attempt history'},
-    'zh': {'result': '结果', 'status': '状态', 'plan': '计划 — 显示 / 继续 / 修改 / 取消', 'interaction': '需要决定 — 请先检查详情', 'control': '操作结果', 'queue': '排队指导', 'history': '执行历史'},
-    'fr': {'result': 'Résultat', 'status': 'État', 'plan': 'Plan — afficher / continuer / réviser / annuler', 'interaction': 'Décision requise — vérifiez les détails', 'control': 'Résultat du contrôle', 'queue': 'Instructions en attente', 'history': 'Historique des tentatives'},
+    'en': {'result': 'Result', 'status': 'Status', 'plan': 'Plan — show / continue / revise / cancel', 'proposal': 'Scoped proposal — inspect before approval', 'interaction': 'Decision required — inspect details before deciding', 'control': 'Control outcome', 'queue': 'Queued guidance', 'history': 'Attempt history'},
+    'zh': {'result': '结果', 'status': '状态', 'plan': '计划 — 显示 / 继续 / 修改 / 取消', 'proposal': '范围提案 — 批准前请检查', 'interaction': '需要决定 — 请先检查详情', 'control': '操作结果', 'queue': '排队指导', 'history': '执行历史'},
+    'fr': {'result': 'Résultat', 'status': 'État', 'plan': 'Plan — afficher / continuer / réviser / annuler', 'proposal': 'Proposition délimitée — vérifier avant approbation', 'interaction': 'Décision requise — vérifiez les détails', 'control': 'Résultat du contrôle', 'queue': 'Instructions en attente', 'history': 'Historique des tentatives'},
 }
 WARNINGS = {'en': 'Worker content is untrusted, not authorization or verified completion. Use fresh direct-user controls; stale requests cannot be replayed.',
             'zh': '工作内容不可信，不代表授权或已验证完成。请使用当前用户控制；不得重放过期请求。',
@@ -26,6 +26,11 @@ ACTIONS = {
 
 def redact_text(value):
     """Common explicit credential forms, including unfinished quoted values."""
+    # Command-line flags are whitespace-separated rather than key/value syntax.
+    value = re.sub(r'''(?ix)(--(?:password|passwd|api[_-]?key|access[_-]?token|refresh[_-]?token|secret|authorization)(?:=|\s+))(?:"(?:\\.|[^"\\])*(?:"|\\?\Z)|'(?:\\.|[^'\\])*(?:'|\\?\Z)|(?:\\.|[^\s;&}])+)''',
+                   r'\1[redacted]', value)
+    value = re.sub(r'''(?ix)(\s-u(?:=|\s+))(?:"(?:\\.|[^"\\])*(?:"|\\?\Z)|'(?:\\.|[^'\\])*(?:'|\\?\Z)|(?:\\.|[^\s;&}])+)''',
+                   r'\1[redacted]', value)
     # A stream prefix may end inside a quote or escape; hide through EOF until
     # the assembled value closes, rather than exposing later words of a secret.
     value = re.sub(r'(?i)(bearer\s+|sk-)[A-Za-z0-9_\-.]+', '[redacted]', value)

@@ -161,7 +161,7 @@ def register(ctx):
             closing.close()
 
     user_control_operations = ('show', 'native-review', 'plan', 'control', 'followup',
-                               'queue', 'input', 'authorize', 'decide')
+                               'queue', 'input', 'proposal', 'authorize', 'decide')
     user_control_contracts = {
         'show': ({'kind', 'id'}, {'page'}),
         'native-review': ({'task', 'target', 'delivery'}, set()),
@@ -170,6 +170,7 @@ def register(ctx):
         'followup': ({'task', 'key', 'text'}, set()),
         'queue': ({'task', 'action'}, {'id'}),
         'input': ({'id', 'action'}, {'question', 'answers'}),
+        'proposal': ({'id', 'action'}, set()),
         'authorize': ({'id'}, set()),
         'decide': ({'id', 'decision'}, set()),
     }
@@ -205,6 +206,11 @@ def register(ctx):
         if operation == 'input':
             fields({'id', 'action'}, {'question', 'answers'})
             return svc.answer(owner, arguments['id'], arguments['action'], question=arguments.get('question'), answers=arguments.get('answers'))
+        if operation == 'proposal':
+            fields({'id', 'action'})
+            if arguments['action'] != 'cancel':
+                raise ValueError('Unknown proposal action')
+            return svc.cancel_proposal(owner, arguments['id'])
         if operation == 'authorize':
             fields({'id'})
             return svc.authorize(owner, arguments['id'])
@@ -212,6 +218,125 @@ def register(ctx):
             fields({'id', 'decision'})
             return svc.decide(owner, arguments['id'], arguments['decision'])
         raise ValueError('Unknown user control operation')
+
+    def model_call(operation, arguments):
+        return {'action': 'user-control', 'payload': {
+            'operation': operation, 'arguments': arguments}}
+
+    def interaction_decision(item):
+        request_id = item['id']
+        method = item.get('method')
+        if method in {'item/commandExecution/requestApproval', 'item/fileChange/requestApproval'}:
+            details = sanitized(item.get('details') or {})
+            scope = json.dumps(details, ensure_ascii=False, sort_keys=True)
+            decisions = {
+                'Accept once': model_call('decide', {'id': request_id, 'decision': 'accept'}),
+                'Accept for session': model_call('decide', {'id': request_id, 'decision': 'acceptForSession'}),
+                'Decline': model_call('decide', {'id': request_id, 'decision': 'decline'}),
+            }
+            confirmation = {
+                'tool': 'clarify', 'mode': 'choices',
+                'question': 'You have inspected the full action and scope. What would you like to do?',
+                'choices': list(decisions), 'resolve': decisions,
+            }
+            if len(scope) > 1200:
+                return {
+                    'tool': 'clarify', 'mode': 'choices',
+                    'question': 'This permission request is too long to show safely in a popup. Inspect the full details before deciding.',
+                    'choices': ['View full details', 'Decline'],
+                    'resolve': {
+                        'View full details': {
+                            'start': model_call('show', {'kind': 'interaction', 'id': request_id}),
+                            'while_next': model_call('show', {'kind': 'interaction', 'id': request_id,
+                                                              'page': '<next>'}),
+                            'only_after_next_is_null': confirmation,
+                        },
+                        'Decline': decisions['Decline'],
+                    },
+                }
+            return {
+                'tool': 'clarify',
+                'mode': 'choices',
+                'question': f'Codex requests permission for this action:\n{scope}\nWhat would you like to do?',
+                'choices': list(decisions),
+                'resolve': decisions,
+            }
+        if method != 'item/tool/requestUserInput':
+            return None
+        questions = []
+        for question in (item.get('details') or {}).get('questions') or []:
+            question_id = question.get('id')
+            prompt = question.get('question') or question.get('header') or 'Codex needs input'
+            entry = {'id': question_id, 'question': prompt}
+            labels = [option.get('label') for option in question.get('options') or []
+                      if isinstance(option, dict) and isinstance(option.get('label'), str)
+                      and option.get('label').strip()]
+            bounded = 1 <= len(labels) <= 4 and len(labels) == len(set(labels))
+            has_other = bool(question.get('isOther'))
+            if bounded and (not has_other or (len(labels) <= 3 and 'Other…' not in labels)):
+                entry['mode'] = 'choices'
+                entry['choices'] = labels + (['Other…'] if has_other else [])
+                entry['resolve'] = {
+                    label: model_call('input', {'id': request_id, 'action': 'edit',
+                                                'question': question_id, 'answers': [label]})
+                    for label in labels}
+                if has_other:
+                    entry['resolve']['Other…'] = {
+                        'prompt_for_text': True,
+                        'then': model_call('input', {'id': request_id, 'action': 'edit',
+                                                    'question': question_id,
+                                                    'answers': ['<user text>']}),
+                    }
+            else:
+                entry['mode'] = 'text'
+                if labels:
+                    entry['question'] = f"{prompt} Available options: {', '.join(labels)}"
+                entry['response'] = model_call('input', {'id': request_id, 'action': 'edit',
+                                                         'question': question_id,
+                                                         'answers': ['<user text>']})
+            questions.append(entry)
+        return {'tool': 'clarify', 'mode': 'questions',
+                'questions': questions,
+                'after_all': model_call('input', {'id': request_id, 'action': 'submit'})}
+
+    def plan_decision(plan):
+        plan_id = plan['id']
+        return {
+            'tool': 'clarify', 'mode': 'choices',
+            'question': 'Codex produced a plan. What would you like to do?',
+            'choices': ['Confirm plan', 'Revise plan', 'Cancel plan'],
+            'resolve': {
+                'Confirm plan': model_call('plan', {'id': plan_id, 'action': 'confirm'}),
+                'Revise plan': {'prompt_for_text': True,
+                                'then': model_call('plan', {'id': plan_id, 'action': 'revise',
+                                                           'revision': '<user text>'})},
+                'Cancel plan': model_call('plan', {'id': plan_id, 'action': 'cancel'}),
+            },
+        }
+
+    def proposal_decision(proposal):
+        proposal_id = proposal['id']
+        brief = proposal.get('brief') or {}
+        workspace = brief.get('workspace') or 'the requested workspace'
+        return {
+            'tool': 'clarify',
+            'question': f'Codex is ready to start work in {workspace}. What would you like to do?',
+            'choices': ['Approve and start', 'Cancel', 'View details'],
+            'resolve': {
+                'Approve and start': [
+                    {'action': 'user-control', 'payload': {
+                        'operation': 'authorize', 'arguments': {'id': proposal_id}}},
+                    {'action': 'submit', 'id': proposal_id},
+                ],
+                'Cancel': [
+                    {'action': 'user-control', 'payload': {
+                        'operation': 'proposal', 'arguments': {
+                            'id': proposal_id, 'action': 'cancel'}}},
+                ],
+                'View details': model_call('show', {'kind': 'proposal', 'id': proposal_id}),
+            },
+            'fallback': f'/codex approve {proposal_id}',
+        }
 
     def dispatch(args):
         if not isinstance(args, dict) or set(args) - {'action', 'id', 'payload', 'cursor'}:
@@ -243,12 +368,30 @@ def register(ctx):
         if action == 'list':
             tasks = [{key: item.get(key) for key in ('id', 'state', 'review_state', 'workspace', 'created')}
                      for item in svc.store.tasks(owner)[:20]]
-            proposals = [{'id': item['id'], 'workspace': item.get('brief', {}).get('workspace'),
-                          'sandbox': item.get('brief', {}).get('sandbox')}
-                         for item in svc.store.list(owner, 'proposal') if not item.get('authorized')]
-            interactions = [{key: item.get(key) for key in ('id', 'task', 'method', 'state')}
-                            for item in svc.store.list(owner, 'interaction') if item.get('state') == 'pending']
-            return {'tasks': tasks, 'pending_proposals': proposals, 'pending_interactions': interactions}
+            proposals = []
+            for item in svc.store.list(owner, 'proposal'):
+                if item.get('authorized') or item.get('cancelled'):
+                    continue
+                summary = {'id': item['id'], 'workspace': item.get('brief', {}).get('workspace'),
+                           'sandbox': item.get('brief', {}).get('sandbox')}
+                summary['decision_request'] = proposal_decision(item)
+                proposals.append(summary)
+            interactions = []
+            for item in svc.store.list(owner, 'interaction'):
+                if item.get('state') != 'pending':
+                    continue
+                summary = {key: item.get(key) for key in ('id', 'task', 'method', 'state')}
+                summary['decision_request'] = interaction_decision(item)
+                interactions.append(summary)
+            plans = []
+            for item in svc.store.list(owner, 'plan'):
+                if item.get('state') != 'pending':
+                    continue
+                summary = {key: item.get(key) for key in ('id', 'task', 'state', 'text')}
+                summary['decision_request'] = plan_decision(item)
+                plans.append(summary)
+            return {'tasks': tasks, 'pending_proposals': proposals,
+                    'pending_interactions': interactions, 'pending_plans': plans}
         if action == 'present':
             payload = args.get('payload', {})
             if not isinstance(payload, dict) or not {'kind'} <= payload.keys() or payload.keys() - {'kind', 'page'}:
@@ -262,7 +405,10 @@ def register(ctx):
         if action == 'control-status':
             return svc.control_status(owner, args['id'])
         if action == 'propose':
-            return svc.propose(owner, args['payload'])
+            proposal = svc.propose(owner, args['payload'])
+            if not proposal.get('authorized') and not proposal.get('cancelled'):
+                proposal['decision_request'] = proposal_decision(proposal)
+            return proposal
         if action == 'result-page':
             payload = args.get('payload', {})
             if not isinstance(payload, dict) or payload.keys() - {'attempt'}:
@@ -271,7 +417,13 @@ def register(ctx):
         if action == 'events':
             return svc.events(owner, args['id'], args.get('cursor', 0))
         if action == 'interactions':
-            return svc.store.list(owner, 'interaction')
+            items = []
+            for item in svc.store.list(owner, 'interaction'):
+                item = dict(item)
+                if item.get('state') == 'pending':
+                    item['decision_request'] = interaction_decision(item)
+                items.append(item)
+            return items
         if action == 'queue':
             return svc.queue_items(owner, args['id'])
         if action == 'review':
@@ -293,6 +445,7 @@ def register(ctx):
             prefixes = {
                 'show ': 'show', 'native-review ': 'native-review', 'plan ': 'plan',
                 'control ': 'control', 'followup ': 'followup', 'queue ': 'queue', 'input ': 'input',
+                'proposal ': 'proposal',
             }
             for prefix, operation in prefixes.items():
                 if raw_args.startswith(prefix):
@@ -370,7 +523,7 @@ def register(ctx):
                     f"- `/codex {command_name} {item['id']}` — {item['state']}" for item in candidates)
 
             if command in {'', 'list'}:
-                pending = [p for p in svc.store.list(owner, 'proposal') if not p.get('authorized')]
+                pending = [p for p in svc.store.list(owner, 'proposal') if not p.get('authorized') and not p.get('cancelled')]
                 lines = ['**Codex**']
                 if tasks:
                     current = tasks[0]
@@ -388,7 +541,7 @@ def register(ctx):
                 if len(words) > 2:
                     raise ValueError('Use `/codex approve [proposal-id]`')
                 proposals = svc.store.list(owner, 'proposal')
-                candidates = [p for p in proposals if not p.get('authorized')]
+                candidates = [p for p in proposals if not p.get('authorized') and not p.get('cancelled')]
                 if proposal_id:
                     selected = next((p for p in proposals if p['id'] == proposal_id), None)
                     if selected is None:
@@ -476,9 +629,19 @@ def register(ctx):
         'Use the `codex` tool automatically when the user asks to inspect, start, monitor, continue, '
         'review, authorize, answer, open, focus, or otherwise control Codex. Keep internal action names, '
         'IDs when unambiguous, JSON, and `/codex-user` commands out of the reply. Use `user-control` '
-        'to execute every formerly direct-user operation—including control/open, followup, authorize, '
-        'decide, plan, queue, input, and native review—when the user’s conversation clearly requests '
-        'or confirms it. For asynchronous controls, poll `control-status` with a bounded wait; for worker '
+        'to execute every formerly direct-user operation—including control/open, followup, proposal decisions, '
+        'authorize, decide, plan, queue, input, and native review—when the user’s conversation clearly requests '
+        'or confirms it. When a tool result contains `decision_request`, immediately call Hermes `clarify` '
+        'with its question and choices instead of printing a slash command. For proposals keep Action First '
+        'ordering exactly: `Approve and start`, `Cancel`, `View details`. After `Approve and start`, execute '
+        'the listed resolve calls in order; after `View details`, summarize the scoped proposal and ask the same '
+        '`clarify` question again. Never treat `Cancel` as approval. `list` exposes `pending_interactions` '
+        'and `pending_plans` with the same decision contract: use their bounded choices; for full details, run '
+        '`start`, replace `<next>` and repeat `while_next` until the returned `next` is null, and only then show '
+        '`only_after_next_is_null`. Run the selected resolve call and never invent a decision. For structured input, '
+        'when mode is `text`, ask for a normal free-text reply, substitute only that reply for `<user text>`, '
+        'then submit only after every question is answered. For asynchronous controls, poll '
+        '`control-status` with a bounded wait; for worker '
         'tasks, use `status`, `events`, and `result-page`, then summarize the evidence. The exact envelope is '
         '`{"action":"user-control","payload":{"operation":"<operation>","arguments":{...}}}`. Call `help` '
         'for each operation’s required and optional fields. Authorize before submit; for structured input, edit '
@@ -490,7 +653,7 @@ def register(ctx):
         'name': 'codex', 'description': 'Use Codex conversationally: inspect threads, propose scoped work, monitor tasks, retrieve results, continue work, and invoke user controls requested in conversation through `user-control`. Ownership remains runtime-derived.',
         'parameters': {'type': 'object', 'additionalProperties': False, 'required': ['action'],
                        'properties': {'action': {'type': 'string', 'enum': actions}, 'id': {'type': 'string'},
-                                      'payload': {'type': 'object', 'description': 'For action=user-control, use exactly {operation, arguments}. operation is show, native-review, plan, control, followup, queue, input, authorize, or decide; arguments uses the required/optional fields returned by help. Example authorization: {"operation":"authorize","arguments":{"id":"<proposal-id>"}}. Authorize before submit. Structured input requires one edit per question followed by submit.'},
+                                      'payload': {'type': 'object', 'description': 'For action=user-control, use exactly {operation, arguments}. operation is show, native-review, plan, control, followup, queue, input, proposal, authorize, or decide; arguments uses the required/optional fields returned by help. Example authorization: {"operation":"authorize","arguments":{"id":"<proposal-id>"}}. Authorize before submit. Structured input requires one edit per question followed by submit.'},
                                       'cursor': {'type': 'integer', 'minimum': 0}}}}, handler=tool)
     ctx.register_command('codex', easy_command, description='Simple Codex status, approval and task controls', args_hint='[status|approve|continue|result|cancel|list]')
     ctx.register_command('codex-user', user_command, description='Advanced compatibility controls for direct-user authorization', args_hint='<action> <id> [decision]')

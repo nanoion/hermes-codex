@@ -189,6 +189,14 @@ class FakeService:
         self.calls.append(('authorize', owner, proposal))
         return {'id': proposal, 'authorized': True}
 
+    def propose(self, owner, brief):
+        self.calls.append(('propose', owner, brief))
+        return {'id': 'proposal-1', 'brief': brief, 'authorized': False}
+
+    def cancel_proposal(self, owner, proposal):
+        self.calls.append(('proposal-cancel', owner, proposal))
+        return {'id': proposal, 'authorized': False, 'cancelled': True}
+
     def submit(self, owner, proposal):
         self.calls.append(('submit', owner, proposal))
         return {'id': TASK_ID, 'state': 'running'}
@@ -211,6 +219,9 @@ class FakeService:
 
     def present(self, owner, kind, task, page=None):
         self.calls.append(('present', owner, kind, task, page))
+        if kind == 'proposal':
+            record = next(item for item in self.store.documents[kind] if item['id'] == task)
+            return {'text': json.dumps(record), 'next': None}
         return {'text': f'result for {task}', 'next': PAGE_TOKEN if page is None else None}
 
     def result_page(self, owner, task, attempt=None, cursor=0):
@@ -271,6 +282,12 @@ class EasyCommandTests(unittest.TestCase):
         guidance = self.ctx.sections['codex.workflow']
         self.assertIn('codex', guidance.lower())
         self.assertIn('user-control', guidance)
+        self.assertIn('clarify', guidance)
+        self.assertIn('Approve and start', guidance)
+        self.assertIn('View details', guidance)
+        self.assertIn('pending_interactions', guidance)
+        self.assertIn('pending_plans', guidance)
+        self.assertIn('free-text', guidance)
         self.assertNotIn('never authorize', guidance.lower())
         self.assertIn('codex', self.ctx.commands)
 
@@ -285,7 +302,7 @@ class EasyCommandTests(unittest.TestCase):
         self.assertTrue(result['success'], result)
         self.assertEqual(set(result['data']['model_user_control_operations']), {
             'show', 'native-review', 'plan', 'control', 'followup',
-            'queue', 'input', 'authorize', 'decide',
+            'queue', 'input', 'proposal', 'authorize', 'decide',
         })
         self.assertEqual(result['data']['user_control_envelope']['payload']['operation'], '<operation>')
         self.assertEqual(result['data']['user_controls']['authorize']['required'], ['id'])
@@ -299,6 +316,168 @@ class EasyCommandTests(unittest.TestCase):
             'required': ['action', 'task'], 'optional': ['id']})
         description = self.ctx.tools['codex']['schema']['parameters']['properties']['payload']['description']
         self.assertIn('{"operation":"authorize","arguments":{"id":"<proposal-id>"}}', description)
+
+    def test_list_advertises_native_permission_plan_and_bounded_input_choices(self):
+        self.service.store.documents['proposal'] = [{
+            'id': 'proposal-pending', 'authorized': False,
+            'brief': {'workspace': '/projects/hermes-codex', 'sandbox': 'workspace-write'},
+        }]
+        self.service.store.documents['interaction'] = [
+            {'id': 'approval-1', 'task': TASK_ID, 'state': 'pending',
+             'method': 'item/commandExecution/requestApproval',
+             'details': {'command': 'touch safe.txt', 'cwd': '/projects/hermes-codex'}},
+            {'id': 'input-1', 'task': TASK_ID, 'state': 'pending',
+             'method': 'item/tool/requestUserInput', 'details': {'questions': [{
+                 'id': 'q1', 'header': 'Mode', 'question': 'Choose mode',
+                 'options': [{'label': 'Safe'}, {'label': 'Fast'}],
+             }]}},
+        ]
+        self.service.store.documents['plan'] = [
+            {'id': 'plan-1', 'task': TASK_ID, 'state': 'pending', 'text': 'Run tests'},
+        ]
+        result = json.loads(self.ctx.tools['codex']['handler']({'action': 'list'}))
+        self.assertTrue(result['success'], result)
+        proposal = result['data']['pending_proposals'][0]['decision_request']
+        self.assertEqual(proposal['choices'][0], 'Approve and start')
+        self.assertEqual(proposal['resolve']['Approve and start'][0]['payload']['arguments']['id'],
+                         'proposal-pending')
+        approval = result['data']['pending_interactions'][0]['decision_request']
+        self.assertEqual(approval['choices'], ['Accept once', 'Accept for session', 'Decline'])
+        self.assertIn('touch safe.txt', approval['question'])
+        self.assertIn('/projects/hermes-codex', approval['question'])
+        self.assertEqual(approval['resolve']['Decline']['payload']['arguments']['decision'], 'decline')
+
+        self.service.store.documents['interaction'][0]['details']['command'] = (
+            r'curl --password alpha,beta --secret foo\ bar --api-key=hidden-token https://example.invalid')
+        redacted = json.loads(self.ctx.tools['codex']['handler']({'action': 'list'}))[
+            'data']['pending_interactions'][0]['decision_request']['question']
+        for secret in ('alpha', 'beta', 'foo', 'bar', 'hidden-token'):
+            self.assertNotIn(secret, redacted)
+        self.assertIn('[redacted]', redacted)
+        bounded = result['data']['pending_interactions'][1]['decision_request']
+        self.assertEqual(bounded['questions'][0]['choices'], ['Safe', 'Fast'])
+        self.assertEqual(bounded['questions'][0]['resolve']['Safe']['payload']['arguments'], {
+            'id': 'input-1', 'action': 'edit', 'question': 'q1', 'answers': ['Safe'],
+        })
+        self.assertEqual(bounded['after_all']['payload']['arguments'], {
+            'id': 'input-1', 'action': 'submit',
+        })
+        plan = result['data']['pending_plans'][0]['decision_request']
+        self.assertEqual(plan['choices'], ['Confirm plan', 'Revise plan', 'Cancel plan'])
+        self.assertEqual(plan['resolve']['Confirm plan']['payload']['operation'], 'plan')
+
+    def test_truncated_permission_requires_full_details_before_confirmation(self):
+        self.service.store.documents['interaction'] = [{
+            'id': 'approval-long', 'task': TASK_ID, 'state': 'pending',
+            'method': 'item/commandExecution/requestApproval',
+            'details': {'command': 'printf ' + ('x' * 1600), 'cwd': '/important/scope'},
+        }]
+        decision = json.loads(self.ctx.tools['codex']['handler']({'action': 'list'}))[
+            'data']['pending_interactions'][0]['decision_request']
+        self.assertEqual(decision['choices'], ['View full details', 'Decline'])
+        self.assertNotIn('Accept once', decision['choices'])
+        inspect = decision['resolve']['View full details']
+        self.assertEqual(inspect['start']['payload']['operation'], 'show')
+        self.assertEqual(inspect['while_next']['payload']['arguments']['page'], '<next>')
+        self.assertEqual(inspect['only_after_next_is_null']['choices'], [
+            'Accept once', 'Accept for session', 'Decline'])
+        self.assertNotIn('after', inspect)
+
+    def test_real_other_label_never_collides_with_custom_answer_choice(self):
+        self.service.store.documents['interaction'] = [{
+            'id': 'input-other', 'task': TASK_ID, 'state': 'pending',
+            'method': 'item/tool/requestUserInput', 'details': {'questions': [{
+                'id': 'q', 'question': 'Choose', 'isOther': True,
+                'options': [{'label': 'Other…'}, {'label': 'Safe'}],
+            }]},
+        }]
+        question = json.loads(self.ctx.tools['codex']['handler']({'action': 'interactions'}))[
+            'data'][0]['decision_request']['questions'][0]
+        self.assertEqual(question['mode'], 'text')
+        self.assertNotIn('choices', question)
+        self.assertIn('Other…, Safe', question['question'])
+
+    def test_mixed_input_preserves_per_question_modes_other_and_large_choice_fallback(self):
+        self.service.store.documents['interaction'] = [{
+            'id': 'input-mixed', 'task': TASK_ID, 'state': 'pending',
+            'method': 'item/tool/requestUserInput', 'details': {'questions': [
+                {'id': 'bounded', 'question': 'Mode?',
+                 'options': [{'label': 'Safe'}, {'label': 'Fast'}], 'isOther': True},
+                {'id': 'many', 'question': 'Region?',
+                 'options': [{'label': value} for value in ['A', 'B', 'C', 'D', 'E']]},
+                {'id': 'text', 'question': 'Why?', 'options': None},
+            ]},
+        }]
+        result = json.loads(self.ctx.tools['codex']['handler']({'action': 'interactions'}))
+        questions = result['data'][0]['decision_request']['questions']
+        self.assertEqual(questions[0]['mode'], 'choices')
+        self.assertEqual(questions[0]['choices'], ['Safe', 'Fast', 'Other…'])
+        self.assertTrue(questions[0]['resolve']['Other…']['prompt_for_text'])
+        self.assertEqual(questions[1]['mode'], 'text')
+        self.assertIn('A, B, C, D, E', questions[1]['question'])
+        self.assertEqual(questions[2]['mode'], 'text')
+
+    def test_proposal_details_are_owner_scoped_and_available_from_discovery(self):
+        brief = {'workspace': '/projects/hermes-codex', 'sandbox': 'workspace-write',
+                 'assignment': 'Implement popup', 'constraints': ['No deploy']}
+        self.service.store.documents['proposal'] = [
+            {'id': 'proposal-details', 'authorized': False, 'brief': brief}]
+        listing = json.loads(self.ctx.tools['codex']['handler']({'action': 'list'}))['data']
+        details_call = listing['pending_proposals'][0]['decision_request']['resolve']['View details']
+        self.assertEqual(details_call['action'], 'user-control')
+        self.assertEqual(details_call['payload'], {
+            'operation': 'show',
+            'arguments': {'kind': 'proposal', 'id': 'proposal-details'},
+        })
+        shown = json.loads(self.ctx.tools['codex']['handler'](details_call))
+        self.assertTrue(shown['success'], shown)
+        self.assertIn('Implement popup', shown['data']['text'])
+        self.assertIn('No deploy', shown['data']['text'])
+
+    def test_interactions_action_preserves_resolved_records_without_live_choices(self):
+        self.service.store.documents['interaction'] = [
+            {'id': 'done', 'task': TASK_ID, 'state': 'consumed',
+             'method': 'item/commandExecution/requestApproval', 'details': {'command': 'true'}},
+        ]
+        result = json.loads(self.ctx.tools['codex']['handler']({'action': 'interactions'}))
+        self.assertEqual(result['data'][0]['id'], 'done')
+        self.assertNotIn('decision_request', result['data'][0])
+
+    def test_free_text_input_does_not_fake_bounded_choices(self):
+        self.service.store.documents['interaction'] = [{
+            'id': 'input-2', 'task': TASK_ID, 'state': 'pending',
+            'method': 'item/tool/requestUserInput', 'details': {'questions': [{
+                'id': 'q2', 'header': 'Reason', 'question': 'Explain why',
+            }]},
+        }]
+        result = json.loads(self.ctx.tools['codex']['handler']({'action': 'interactions'}))
+        request = result['data'][0]['decision_request']
+        self.assertEqual(request['mode'], 'questions')
+        self.assertEqual(request['questions'][0]['mode'], 'text')
+        self.assertNotIn('choices', request['questions'][0])
+
+    def test_proposal_requests_native_action_first_confirmation(self):
+        result = json.loads(self.ctx.tools['codex']['handler']({
+            'action': 'propose',
+            'payload': {'workspace': '/projects/hermes-codex', 'sandbox': 'workspace-write'},
+        }))
+        self.assertTrue(result['success'], result)
+        request = result['data']['decision_request']
+        self.assertEqual(request['tool'], 'clarify')
+        self.assertEqual(request['choices'], [
+            'Approve and start', 'Cancel', 'View details',
+        ])
+        self.assertEqual(request['resolve']['Approve and start'], [
+            {'action': 'user-control', 'payload': {
+                'operation': 'authorize', 'arguments': {'id': 'proposal-1'}}},
+            {'action': 'submit', 'id': 'proposal-1'},
+        ])
+        self.assertEqual(request['resolve']['Cancel'], [
+            {'action': 'user-control', 'payload': {
+                'operation': 'proposal', 'arguments': {
+                    'id': 'proposal-1', 'action': 'cancel'}}},
+        ])
+        self.assertNotIn('owner', json.dumps(request).lower())
 
     def test_model_can_open_task_without_printing_direct_user_command(self):
         result = json.loads(self.ctx.tools['codex']['handler']({
@@ -332,6 +511,7 @@ class EasyCommandTests(unittest.TestCase):
             'plan': {'id': 'plan-1', 'action': 'confirm'},
             'queue': {'task': TASK_ID, 'action': 'clear'},
             'input': {'id': 'input-1', 'action': 'edit', 'question': 'choice', 'answers': ['yes']},
+            'proposal': {'id': 'proposal-1', 'action': 'cancel'},
             'authorize': {'id': 'proposal-1'},
             'decide': {'id': 'request-1', 'decision': 'accept'},
         }

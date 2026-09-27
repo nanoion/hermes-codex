@@ -10,7 +10,7 @@ A security-scoped [Hermes Agent](https://hermes-agent.nousresearch.com/) plugin 
 - Simple direct-user controls: `/codex status`, `/codex approve`, `/codex continue`, `/codex result`, and `/codex cancel`
 - Advanced compatibility command: `/codex-user`
 - Read-only and workspace-write assignments with explicit roots
-- Proposal → conversational authorization → submission workflow
+- Proposal → native Hermes choice popup → conversational authorization → submission workflow
 - Durable task status, events, paged results, follow-ups, cancellation, approvals, plans, reviews, goals, and attachments
 - Existing Codex account/thread discovery through a named host account home
 - Credential redaction before durable stream persistence
@@ -108,13 +108,15 @@ Inspect the existing Codex threads for /projects/my-app.
 Ask Codex to fix the login bug in /projects/my-app. Do not commit or deploy.
 ```
 
-For write-capable work Hermes creates an exact scoped proposal. Confirm once in normal conversation, for example:
+For write-capable work Hermes creates an exact scoped proposal and opens a native choice prompt on supported surfaces:
 
-```text
-Yes, approve and start that proposal.
-```
+- **Approve and start** — authorizes the exact proposal and starts it immediately.
+- **Cancel** — closes the pending proposal without granting authority.
+- **View details** — shows workspace, sandbox, roots, and scope, then presents the same choices again.
 
-Hermes invokes the model-facing `user-control` operation and starts the task. `/codex approve` remains available as a manual shortcut. An ID is needed only when several proposals or tasks are eligible.
+No proposal ID or slash command needs to be typed. The same native decision pattern is used for live Codex permission requests, plan confirmation, and bounded structured-input choices. Free-text answers remain normal replies.
+
+Hermes invokes the model-facing `user-control` operation only after the selected choice. `/codex approve` remains available as an unsupported-surface/manual fallback. An ID is needed only when several proposals or tasks are eligible.
 
 ## Simple `/codex` controls
 

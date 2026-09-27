@@ -1,6 +1,6 @@
 # Software Requirements Specification — hermes-codex
 
-- **Document version:** 0.3
+- **Document version:** 0.4
 - **Status:** Draft for stakeholder review; not implementation approval
 - **Project:** `/projects/hermes-codex`
 - **Product:** Hermes plugin integrating Codex through the Python SDK
@@ -113,7 +113,7 @@ Using an SDK-managed app-server process is compatible with the Python SDK requir
 
 1. User requests work through normal Hermes conversation.
 2. Hermes discovers relevant scoped Codex work or defines scope, constraints, permissions, and acceptance criteria.
-3. For write-capable work, Hermes prepares an exact proposal and requests one short direct-user confirmation.
+3. For write-capable work, Hermes prepares an exact proposal and presents one native Action First choice prompt: Approve and start, Cancel, or View details. Slash commands remain a fallback, not the routine path.
 4. Plugin validates the workspace, ownership, configuration, and readiness.
 5. Plugin durably records the assignment and returns a task identifier without requiring the user to manage it.
 6. Codex executes; Hermes remains available for conversation and control.
@@ -126,7 +126,7 @@ Hermes submits a follow-up tied to the existing task and Codex thread. The plugi
 
 ### UC-03 — Handle a decision or approval
 
-The worker requests information or permission. Hermes presents the exact action and relevant scope to the user when needed. Only a valid, current decision may be relayed. Denial, expiry, unsupported approval mediation, or ambiguous identity shall not result in automatic approval.
+The worker requests information or permission. Hermes presents the exact action and relevant scope through native `clarify` choices when the decision is bounded; free-text questions remain normal replies. Only a valid, current decision may be relayed. Denial, cancellation, expiry, replay, unsupported approval mediation, or ambiguous identity shall not result in automatic approval.
 
 ### UC-04 — Inspect and cancel
 
@@ -180,7 +180,7 @@ The system shall support continued work on an existing task/thread. Proposed def
 
 ### FR-08 — Approval mediation
 
-Approval requests shall be persisted with request ID, proposed action, scope, task/turn binding, expiry, and decision state. Decisions shall be checked against the trusted runtime-derived owner and the current conversation's interpreted request or confirmation, whether invoked through `user-control`, `/codex`, or `/codex-user`. Duplicate, expired, cross-task, cross-owner, or stale approvals shall be rejected. The plugin shall not enable blanket automatic approval merely to bypass an SDK limitation.
+Approval requests shall be persisted with request ID, proposed action, scope, task/turn binding, expiry, and decision state. The plugin shall expose owner-scoped, non-authoritative decision descriptors so Hermes can render native `clarify` choices; callback labels themselves shall not grant authority. Proposal confirmation shall use Action First ordering: Approve and start, Cancel, View details. Permission, plan, and bounded structured-input choices shall use the same pattern; free-text input shall remain a normal reply. Decisions shall be checked against the trusted runtime-derived owner and the current conversation's interpreted request or confirmation, whether invoked through `user-control`, `/codex`, or `/codex-user`. Duplicate, expired, cancelled, cross-task, cross-owner, or stale approvals shall be rejected. The plugin shall not enable blanket automatic approval merely to bypass an SDK limitation.
 
 ### FR-09 — Permission enforcement
 

@@ -68,6 +68,21 @@ class PluginTests(unittest.TestCase):
                     self.assertEqual(state['data']['result']['data'], [])
                     bad = json.loads(ctx.commands['codex-user']('control ' + json.dumps({'action': 'threads', 'payload': {'owner': 'forged'}})))
                     self.assertFalse(bad['success'])
+                    cancelled = json.loads(tool({'action': 'propose', 'payload': brief(root / 'project', key='cancel-me')}))
+                    cancelled_id = cancelled['data']['id']
+                    cancelled_result = json.loads(tool({'action': 'user-control', 'payload': {
+                        'operation': 'proposal', 'arguments': {'id': cancelled_id, 'action': 'cancel'},
+                    }}))
+                    self.assertTrue(cancelled_result['success'], cancelled_result)
+                    self.assertTrue(cancelled_result['data']['cancelled'])
+                    cancelled_again = json.loads(tool({
+                        'action': 'propose', 'payload': brief(root / 'project', key='cancel-me')}))
+                    self.assertTrue(cancelled_again['success'], cancelled_again)
+                    self.assertTrue(cancelled_again['data']['cancelled'])
+                    self.assertNotIn('decision_request', cancelled_again['data'])
+                    self.assertFalse(json.loads(tool({'action': 'user-control', 'payload': {
+                        'operation': 'authorize', 'arguments': {'id': cancelled_id},
+                    }}))['success'])
                     result = json.loads(tool({'action': 'propose', 'payload': brief(root / 'project')}))
                     self.assertTrue(result['success'], result)
                     proposal = result['data']
@@ -97,6 +112,12 @@ class PluginTests(unittest.TestCase):
                         }}))
                         self.assertFalse(denied_control['success'])
                         self.assertEqual(denied_control['code'], 'authorization')
+                        denied_proposal = json.loads(tool({'action': 'user-control', 'payload': {
+                            'operation': 'proposal',
+                            'arguments': {'id': proposal['id'], 'action': 'cancel'},
+                        }}))
+                        self.assertFalse(denied_proposal['success'])
+                        self.assertEqual(denied_proposal['code'], 'authorization')
                 finally:
                     for close in ctx.cleanups:
                         close()

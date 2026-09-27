@@ -244,10 +244,22 @@ class Service(Controls):
         except Denied:
             return self.store.put(owner, 'proposal', key, {'id': key, 'brief': brief, 'digest': digest, 'provider': self.settings(owner)['provider'], 'account': self.selected_account(owner), 'authorized': False})
 
+    def cancel_proposal(self, owner, proposal_id):
+        with self.lock:
+            proposal = self.store.get(owner, 'proposal', proposal_id)
+            if proposal.get('authorized'):
+                raise Conflict('Authorized proposal can no longer be cancelled')
+            if proposal.get('cancelled'):
+                raise Conflict('Proposal already cancelled')
+            proposal.update(cancelled=True, cancelled_at=time.time())
+            return self.store.put(owner, 'proposal', proposal_id, proposal)
+
     def authorize(self, owner, proposal_id):
         """Authorize a proposal for this runtime-derived owner; callers may be conversational or slash controls."""
         with self.lock:
             proposal = self.store.get(owner, 'proposal', proposal_id)
+            if proposal.get('cancelled'):
+                raise Conflict('Cancelled proposal cannot be authorized')
             from .access import validate, identity
             validate(proposal['brief'], self.roots, self.allow_full_access)
             proposal.update(authorized=True, authorized_at=time.time(), expires=time.time() + 900, paths=identity(proposal['brief']))
@@ -619,13 +631,13 @@ class Service(Controls):
                 if not record['attempts'] or record['attempts'][-1]['result'] is None:
                     raise Conflict('No result available')
                 value = record['attempts'][-1]['result']
-            elif kind in {'plan', 'interaction', 'control'}:
+            elif kind in {'plan', 'interaction', 'control', 'proposal'}:
                 value = self.store.get(owner, kind, key)
             elif kind in {'status', 'queue', 'history'}:
                 record = self.store.task(owner, key)
                 value = record if kind == 'status' else [q for q in self.store.list(owner, 'queue') if q['task'] == key] if kind == 'queue' else record['attempts']
             else:
-                raise ValueError('Presentation supports status/result/plan/interaction/control/queue/history')
+                raise ValueError('Presentation supports status/result/plan/interaction/control/proposal/queue/history')
             body = json.dumps(sanitized(value, bounded=False), ensure_ascii=False, indent=2)
             parts = chunks(TITLES.get(locale, TITLES['en'])[kind] + '\n' + WARNINGS.get(locale, WARNINGS['en']) + '\n' + body)
             offset = 0
