@@ -34,7 +34,7 @@ class Context:
 
 
 class PluginTests(unittest.TestCase):
-    def test_tools_never_grant_user_authority_or_accept_forged_scope(self):
+    def test_model_user_controls_preserve_policy_and_reject_forged_scope(self):
         import hermes_codex
         self.assertTrue(hasattr(hermes_codex, 'register'), 'Supported plugin registration missing')
         from hermes_codex import plugin
@@ -54,7 +54,7 @@ class PluginTests(unittest.TestCase):
                     self.assertNotIn('approve', ctx.tools)
                     help_result = json.loads(tool({'action': 'help'}))
                     self.assertIn('result-page', help_result['data']['actions'])
-                    self.assertIn('thread-confirm', help_result['data'].get('user_controls', {}), 'Control discovery missing')
+                    self.assertIn('thread-confirm', help_result['data'].get('control_operations', {}), 'Control discovery missing')
                     self.assertFalse(json.loads(tool({'action': 'inspect', 'payload': {'operation': 'settings-set', 'arguments': {}}}))['success'])
                     self.assertFalse(json.loads(tool({'action': 'control', 'payload': {'action': 'settings-set'}}))['success'])
                     control = json.loads(ctx.commands['codex-user']('control ' + json.dumps({'action': 'threads', 'payload': {}})))
@@ -74,18 +74,29 @@ class PluginTests(unittest.TestCase):
                     self.assertFalse(json.loads(tool({'action': 'authorize', 'id': proposal['id']}))['success'])
                     self.assertFalse(json.loads(tool({'action': 'submit', 'id': proposal['id'], 'owner': 'forged'}))['success'])
                     self.assertFalse(json.loads(tool({'action': 'submit', 'id': proposal['id']}))['success'])
-                    authorized = json.loads(ctx.commands['codex-user']('authorize ' + proposal['id']))
+                    authorized = json.loads(tool({'action': 'user-control', 'payload': {
+                        'operation': 'authorize', 'arguments': {'id': proposal['id']},
+                    }}))
                     self.assertTrue(authorized['success'], authorized)
                     dispatched = json.loads(tool({'action': 'submit', 'id': proposal['id']}))
                     self.assertTrue(dispatched['success'], dispatched)
                     task_id = dispatched['data']['id']
-                    queued = json.loads(ctx.commands['codex-user']('followup ' + json.dumps({'task': task_id, 'key': 'next', 'text': 'Inspect more'})))
+                    queued = json.loads(tool({'action': 'user-control', 'payload': {
+                        'operation': 'followup',
+                        'arguments': {'task': task_id, 'key': 'next', 'text': 'Inspect more'},
+                    }}))
                     self.assertTrue(queued['success'], queued)
                     self.assertTrue(json.loads(tool({'action': 'queue', 'id': task_id}))['success'])
                     with patch.object(plugin, 'current_scope', return_value=('other-owner', 'other-session')):
                         denied = json.loads(tool({'action': 'status', 'id': task_id}))
                         self.assertFalse(denied['success'])
                         self.assertEqual(denied['code'], 'authorization')
+                        denied_control = json.loads(tool({'action': 'user-control', 'payload': {
+                            'operation': 'followup',
+                            'arguments': {'task': task_id, 'key': 'cross-owner', 'text': 'Must fail'},
+                        }}))
+                        self.assertFalse(denied_control['success'])
+                        self.assertEqual(denied_control['code'], 'authorization')
                 finally:
                     for close in ctx.cleanups:
                         close()

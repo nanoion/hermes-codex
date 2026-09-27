@@ -160,24 +160,86 @@ def register(ctx):
         if closing:
             closing.close()
 
-    actions = ['help', 'list', 'propose', 'submit', 'status', 'events', 'result', 'result-page', 'cancel', 'review', 'interactions', 'queue', 'control-status', 'inspect', 'present', 'diagnostics']
+    user_control_operations = ('show', 'native-review', 'plan', 'control', 'followup',
+                               'queue', 'input', 'authorize', 'decide')
+    user_control_contracts = {
+        'show': ({'kind', 'id'}, {'page'}),
+        'native-review': ({'task', 'target', 'delivery'}, set()),
+        'plan': ({'id', 'action'}, {'revision'}),
+        'control': ({'action', 'payload'}, set()),
+        'followup': ({'task', 'key', 'text'}, set()),
+        'queue': ({'task', 'action'}, {'id'}),
+        'input': ({'id', 'action'}, {'question', 'answers'}),
+        'authorize': ({'id'}, set()),
+        'decide': ({'id', 'decision'}, set()),
+    }
+    actions = ['help', 'list', 'propose', 'submit', 'status', 'events', 'result', 'result-page', 'cancel', 'review', 'interactions', 'queue', 'control-status', 'inspect', 'present', 'diagnostics', 'user-control']
+
+    def dispatch_user_control(svc, owner, payload):
+        if not isinstance(payload, dict) or set(payload) != {'operation', 'arguments'} or not isinstance(payload['arguments'], dict):
+            raise ValueError('User control requires operation and arguments')
+        operation, arguments = payload['operation'], payload['arguments']
+
+        def fields(required, optional=()):
+            if not set(required) <= arguments.keys() or arguments.keys() - set(required) - set(optional):
+                raise ValueError(f'Invalid {operation} fields')
+
+        if operation == 'show':
+            fields({'kind', 'id'}, {'page'})
+            return svc.present(owner, arguments['kind'], arguments['id'], page=arguments.get('page'))
+        if operation == 'native-review':
+            fields({'task', 'target', 'delivery'})
+            return svc.native_review(owner, arguments['task'], arguments['target'], arguments['delivery'])
+        if operation == 'plan':
+            fields({'id', 'action'}, {'revision'})
+            return svc.plan_action(owner, arguments['id'], arguments['action'], arguments.get('revision'))
+        if operation == 'control':
+            fields({'action', 'payload'})
+            return svc.control(owner, arguments['action'], arguments['payload'])
+        if operation == 'followup':
+            fields({'task', 'key', 'text'})
+            return svc.followup(owner, arguments['task'], arguments['key'], arguments['text'])
+        if operation == 'queue':
+            fields({'task', 'action'}, {'id'})
+            return svc.queue_action(owner, arguments['task'], arguments['action'], arguments.get('id'))
+        if operation == 'input':
+            fields({'id', 'action'}, {'question', 'answers'})
+            return svc.answer(owner, arguments['id'], arguments['action'], question=arguments.get('question'), answers=arguments.get('answers'))
+        if operation == 'authorize':
+            fields({'id'})
+            return svc.authorize(owner, arguments['id'])
+        if operation == 'decide':
+            fields({'id', 'decision'})
+            return svc.decide(owner, arguments['id'], arguments['decision'])
+        raise ValueError('Unknown user control operation')
 
     def dispatch(args):
         if not isinstance(args, dict) or set(args) - {'action', 'id', 'payload', 'cursor'}:
             raise ValueError('Unexpected tool arguments; ownership is runtime-derived')
         action = args.get('action')
         if action not in actions:
-            raise ValueError('Unknown action; authorization and approvals require direct `/codex` controls')
+            raise ValueError('Unknown action')
         owner = scope()
         if action == 'help':
-            return {'actions': actions, 'direct_user': ['/codex approve [proposal-id]', '/codex status [task-id]', '/codex continue [task-id] <instruction>', '/codex result [task-id] [page-token]', '/codex cancel [task-id]', '/codex decide [request-id] <decision>', '/codex-user <advanced-action>'],
-                    'user_controls': {k: {'required': sorted(v[0]), 'optional': sorted(v[1])} for k, v in CONTROL_FIELDS.items()},
-                    'readiness': 'Full parity is not delivered; authenticated worker setup requires explicit authorization.'}
+            return {'actions': actions, 'model_user_control_operations': user_control_operations,
+                    'direct_user': ['/codex approve [proposal-id]', '/codex status [task-id]', '/codex continue [task-id] <instruction>', '/codex result [task-id] [page-token]', '/codex cancel [task-id]', '/codex decide [request-id] <decision>', '/codex-user <advanced-action>'],
+                    'user_control_envelope': {'action': 'user-control', 'payload': {'operation': '<operation>', 'arguments': '<operation-specific object>'}},
+                    'user_controls': {k: {'required': sorted(v[0]), 'optional': sorted(v[1])} for k, v in user_control_contracts.items()},
+                    'control_operations': {k: {'required': sorted(v[0]), 'optional': sorted(v[1])} for k, v in CONTROL_FIELDS.items()},
+                    'examples': {
+                        'authorize': {'action': 'user-control', 'payload': {'operation': 'authorize', 'arguments': {'id': '<proposal-id>'}}},
+                        'followup': {'action': 'user-control', 'payload': {'operation': 'followup', 'arguments': {'task': '<task-id>', 'key': '<idempotency-key>', 'text': '<instruction>'}}},
+                        'input-edit': {'action': 'user-control', 'payload': {'operation': 'input', 'arguments': {'id': '<request-id>', 'action': 'edit', 'question': '<question-id>', 'answers': ['<answer>']}}},
+                        'input-submit': {'action': 'user-control', 'payload': {'operation': 'input', 'arguments': {'id': '<request-id>', 'action': 'submit'}}}},
+                    'sequencing': ['authorize a proposal before submit', 'edit every structured-input question before submit', 'poll control-status for asynchronous control operations'],
+                    'readiness': 'User controls are model-accessible when requested in conversation; downstream scope and policy checks still apply.'}
         if action == 'diagnostics':
             from .runtime import capabilities
             return capabilities()
         svc = service()
         owner = scope(svc)
+        if action == 'user-control':
+            return dispatch_user_control(svc, owner, args.get('payload'))
         if action == 'list':
             tasks = [{key: item.get(key) for key in ('id', 'state', 'review_state', 'workspace', 'created')}
                      for item in svc.store.tasks(owner)[:20]]
@@ -228,46 +290,25 @@ def register(ctx):
         def run():
             svc = service()
             owner = scope(svc)
-            if raw_args.startswith('show '):
-                payload = json.loads(raw_args[5:])
-                if not isinstance(payload, dict) or not {'kind', 'id'} <= payload.keys() or payload.keys() - {'kind', 'id', 'page'}:
-                    raise ValueError('Show requires kind/id and optional page')
-                return service().present(owner, payload['kind'], payload['id'], page=payload.get('page'))
-            if raw_args.startswith('native-review '):
-                payload = json.loads(raw_args[14:])
-                if not isinstance(payload, dict) or set(payload) != {'task', 'target', 'delivery'}:
-                    raise ValueError('Native review requires task, target, delivery')
-                return service().native_review(owner, payload['task'], payload['target'], payload['delivery'])
-            if raw_args.startswith('plan '):
-                payload = json.loads(raw_args[5:])
-                if not isinstance(payload, dict) or not {'id', 'action'} <= payload.keys() or payload.keys() - {'id', 'action', 'revision'}:
-                    raise ValueError('Plan requires id, action, optional revision')
-                return service().plan_action(owner, payload['id'], payload['action'], payload.get('revision'))
-            if raw_args.startswith('control '):
-                payload = json.loads(raw_args[8:])
-                if not isinstance(payload, dict) or set(payload) != {'action', 'payload'}:
-                    raise ValueError('Control requires action and payload')
-                return service().control(owner, payload['action'], payload['payload'])
-            if raw_args.startswith('followup '):
-                payload = json.loads(raw_args[9:])
-                if not isinstance(payload, dict) or set(payload) != {'task', 'key', 'text'}:
-                    raise ValueError('Follow-up requires task, key, text')
-                return service().followup(owner, payload['task'], payload['key'], payload['text'])
-            if raw_args.startswith('queue '):
-                payload = json.loads(raw_args[6:])
-                if not isinstance(payload, dict) or set(payload) - {'task', 'action', 'id'}:
-                    raise ValueError('Queue requires task, action, optional id')
-                return service().queue_action(owner, payload['task'], payload['action'], payload.get('id'))
-            if raw_args.startswith('input '):
-                payload = json.loads(raw_args[6:])
-                if not isinstance(payload, dict) or set(payload) - {'id', 'action', 'question', 'answers'}:
-                    raise ValueError('Invalid structured input arguments')
-                return service().answer(owner, payload['id'], payload['action'], question=payload.get('question'), answers=payload.get('answers'))
+            prefixes = {
+                'show ': 'show', 'native-review ': 'native-review', 'plan ': 'plan',
+                'control ': 'control', 'followup ': 'followup', 'queue ': 'queue', 'input ': 'input',
+            }
+            for prefix, operation in prefixes.items():
+                if raw_args.startswith(prefix):
+                    return dispatch_user_control(svc, owner, {
+                        'operation': operation,
+                        'arguments': json.loads(raw_args[len(prefix):]),
+                    })
             words = raw_args.split()
             if len(words) == 2 and words[0] == 'authorize':
-                return service().authorize(owner, words[1])
+                return dispatch_user_control(svc, owner, {
+                    'operation': 'authorize', 'arguments': {'id': words[1]},
+                })
             if len(words) == 3 and words[0] == 'decide':
-                return service().decide(owner, words[1], words[2])
+                return dispatch_user_control(svc, owner, {
+                    'operation': 'decide', 'arguments': {'id': words[1], 'decision': words[2]},
+                })
             raise ValueError('Use authorize <proposal-id> or decide <request-id> <accept|acceptForSession|decline|cancel>')
         return envelope(run, locale)
 
@@ -433,19 +474,24 @@ def register(ctx):
 
     guidance = (
         'Use the `codex` tool automatically when the user asks to inspect, start, monitor, continue, '
-        'review, or retrieve work from Codex. Keep internal action names and JSON out of the reply. '
-        'For asynchronous controls, poll `control-status` with a bounded wait; for worker tasks, use '
-        '`status`, `events`, and `result-page`, then summarize the evidence. For write-capable work, '
-        'create the exact proposal and ask for one confirmation with `/codex approve`; never authorize '
-        'or approve on the user’s behalf. Prefer the current scoped task/thread when unambiguous and '
-        'ask a short choice only when multiple candidates remain.'
+        'review, authorize, answer, open, focus, or otherwise control Codex. Keep internal action names, '
+        'IDs when unambiguous, JSON, and `/codex-user` commands out of the reply. Use `user-control` '
+        'to execute every formerly direct-user operation—including control/open, followup, authorize, '
+        'decide, plan, queue, input, and native review—when the user’s conversation clearly requests '
+        'or confirms it. For asynchronous controls, poll `control-status` with a bounded wait; for worker '
+        'tasks, use `status`, `events`, and `result-page`, then summarize the evidence. The exact envelope is '
+        '`{"action":"user-control","payload":{"operation":"<operation>","arguments":{...}}}`. Call `help` '
+        'for each operation’s required and optional fields. Authorize before submit; for structured input, edit '
+        'every question before submit. Do not merely print a slash command for the user to copy. Prefer the '
+        'current scoped task/thread when unambiguous and ask a short choice only when multiple candidates remain.'
     )
     ctx.register_system_prompt_section('codex.workflow', guidance, position='after_memory')
     ctx.register_tool(name='codex', toolset='codex', schema={
-        'name': 'codex', 'description': 'Use Codex conversationally: inspect threads, propose scoped work, monitor tasks, retrieve results, and continue the current task. Hide internal actions from the user. Write proposals require direct `/codex approve`; this tool cannot authorize them.',
+        'name': 'codex', 'description': 'Use Codex conversationally: inspect threads, propose scoped work, monitor tasks, retrieve results, continue work, and invoke user controls requested in conversation through `user-control`. Ownership remains runtime-derived.',
         'parameters': {'type': 'object', 'additionalProperties': False, 'required': ['action'],
                        'properties': {'action': {'type': 'string', 'enum': actions}, 'id': {'type': 'string'},
-                                      'payload': {'type': 'object'}, 'cursor': {'type': 'integer', 'minimum': 0}}}}, handler=tool)
+                                      'payload': {'type': 'object', 'description': 'For action=user-control, use exactly {operation, arguments}. operation is show, native-review, plan, control, followup, queue, input, authorize, or decide; arguments uses the required/optional fields returned by help. Example authorization: {"operation":"authorize","arguments":{"id":"<proposal-id>"}}. Authorize before submit. Structured input requires one edit per question followed by submit.'},
+                                      'cursor': {'type': 'integer', 'minimum': 0}}}}, handler=tool)
     ctx.register_command('codex', easy_command, description='Simple Codex status, approval and task controls', args_hint='[status|approve|continue|result|cancel|list]')
     ctx.register_command('codex-user', user_command, description='Advanced compatibility controls for direct-user authorization', args_hint='<action> <id> [decision]')
     ctx.on_unload(close)

@@ -742,7 +742,7 @@ class Controls:
         return next((p for p in self.store.list(owner, 'plan') if p['task'] == task and p['state'] == 'pending'), None)
 
     def plan_action(self, owner, key, action, revision=None):
-        """Only direct-user controls may decide a worker-authored plan."""
+        """Apply a user-confirmed plan decision within the runtime-derived owner scope."""
         with self.lock:
             plan = self.store.get(owner, 'plan', key)
             if action == 'show':

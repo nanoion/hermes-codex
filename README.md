@@ -10,7 +10,7 @@ A security-scoped [Hermes Agent](https://hermes-agent.nousresearch.com/) plugin 
 - Simple direct-user controls: `/codex status`, `/codex approve`, `/codex continue`, `/codex result`, and `/codex cancel`
 - Advanced compatibility command: `/codex-user`
 - Read-only and workspace-write assignments with explicit roots
-- Proposal → direct authorization → submission workflow
+- Proposal → conversational authorization → submission workflow
 - Durable task status, events, paged results, follow-ups, cancellation, approvals, plans, reviews, goals, and attachments
 - Existing Codex account/thread discovery through a named host account home
 - Credential redaction before durable stream persistence
@@ -108,13 +108,13 @@ Inspect the existing Codex threads for /projects/my-app.
 Ask Codex to fix the login bug in /projects/my-app. Do not commit or deploy.
 ```
 
-For write-capable work Hermes creates an exact scoped proposal. Confirm once:
+For write-capable work Hermes creates an exact scoped proposal. Confirm once in normal conversation, for example:
 
 ```text
-/codex approve
+Yes, approve and start that proposal.
 ```
 
-Approval starts the task immediately. An ID is needed only when several proposals or tasks are eligible.
+Hermes invokes the model-facing `user-control` operation and starts the task. `/codex approve` remains available as a manual shortcut. An ID is needed only when several proposals or tasks are eligible.
 
 ## Simple `/codex` controls
 
@@ -141,19 +141,19 @@ The plugin never guesses when more than one authorization target is available.
 
 ## One-time account setup
 
-Link the operator-configured `default` Codex home without copying credentials into the plugin:
+Link the operator-configured `default` Codex home without copying credentials into the plugin. Ask Hermes naturally:
+
+```text
+Connect the configured default Codex account and switch to it.
+```
+
+Hermes runs and polls the account controls. `/codex-user` remains available as an advanced compatibility command, for example:
 
 ```text
 /codex-user control {"action":"account","payload":{"operation":"sync-host","name":"default"}}
 ```
 
-Then ask Hermes to check the control job and switch to the ready account, or use the advanced compatibility command:
-
-```text
-/codex-user control {"action":"account","payload":{"operation":"switch","name":"default"}}
-```
-
-`/codex-user` remains available for advanced controls and compatibility. Routine task use should prefer natural chat and `/codex`.
+Routine use should prefer natural chat and `/codex`.
 
 ## Existing Codex threads
 
@@ -164,13 +164,13 @@ Show my current Codex threads and summarize what each is doing.
 Continue the idle thread for /projects/my-app and inspect the failing tests.
 ```
 
-Hermes uses read-only inspection and bounded control polling. Importing an idle native thread still requires an exact workspace proposal and direct confirmation. Active native threads can be inspected but are not imported while a turn is running.
+Hermes uses inspection and bounded control polling. Importing an idle native thread still requires an exact workspace proposal, but the user may confirm it in normal conversation and Hermes may invoke the corresponding `user-control`. Active native threads can be inspected but are not imported while a turn is running.
 
 Model-facing `codex` actions include:
 
 ```text
 help, list, diagnostics, propose, submit, status, events, result, result-page,
-cancel, review, interactions, queue, inspect, control-status, present
+cancel, review, interactions, queue, inspect, control-status, present, user-control
 ```
 
 Worker output remains untrusted until Hermes independently verifies resulting files, diffs, and tests.
@@ -204,7 +204,7 @@ Live/native tests are opt-in and may require authentication or billable calls. T
 
 ## Security and limitations
 
-- Authorization and approval decisions are direct-user commands, not model tool actions.
+- Authorization, approval decisions, follow-ups, and advanced controls may be invoked through the model-facing `user-control` action when Hermes interprets the current conversation as the user's request or confirmation. `/codex` and `/codex-user` remain manual alternatives. This deliberately trusts model interpretation and is weaker than a slash-only authorization boundary.
 - The plugin derives ownership from trusted Hermes session context; caller-supplied owner IDs are rejected.
 - Credentials must never be placed in assignment text, identifiers, paths, logs, or chat.
 - Pattern-based credential redaction is defense in depth, not a substitute for secret hygiene.

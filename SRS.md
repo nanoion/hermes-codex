@@ -1,6 +1,6 @@
 # Software Requirements Specification — hermes-codex
 
-- **Document version:** 0.2
+- **Document version:** 0.3
 - **Status:** Draft for stakeholder review; not implementation approval
 - **Project:** `/projects/hermes-codex`
 - **Product:** Hermes plugin integrating Codex through the Python SDK
@@ -164,7 +164,7 @@ Missing mandatory fields shall produce validation errors before worker execution
 
 The plugin shall bind every task to a canonical scope derived from the active Hermes profile, platform, trusted user, chat, conversation type, and thread identity, plus workspace, Codex thread, and turn identifiers. A slash command and a later model-facing tool call in the same trusted conversation shall resolve to that same canonical scope even when their transient Hermes session IDs differ. Different profiles, platforms, users, chats, and threads shall remain isolated; group/channel contexts shall not inherit DM ownership. These identities shall come from trusted runtime context, not worker text or caller-supplied ownership claims. Access outside the authorized scope shall be denied. Legacy session-bound records may be migrated only through an exact derived alias, atomically and without relocating or losing their credential, worker-thread, or attachment storage.
 
-Routine use shall support natural conversation and context-sensitive `/codex` controls. Task/proposal IDs may be omitted only when the eligible target is unique; mutating commands shall present a choice instead of guessing when multiple targets remain. The model-facing tool shall never grant authorization or approve permission escalation.
+Routine use shall support natural conversation and context-sensitive `/codex` controls. Task/proposal IDs may be omitted only when the eligible target is unique; mutating commands shall present a choice instead of guessing when multiple targets remain. When the current conversation is interpreted as the user's request or confirmation, the model-facing tool may invoke all compatibility user controls—including authorization and permission decisions—through a strictly validated `user-control` operation. `/codex` and `/codex-user` remain manual alternatives. This is an explicit product decision to trust model interpretation rather than require a slash-only authorization boundary; trusted owner derivation and downstream policy checks remain mandatory.
 
 ### FR-05 — Non-blocking execution
 
@@ -180,7 +180,7 @@ The system shall support continued work on an existing task/thread. Proposed def
 
 ### FR-08 — Approval mediation
 
-Approval requests shall be persisted with request ID, proposed action, scope, task/turn binding, expiry, and decision state. Decisions shall be checked against trusted manager/user authorization. Duplicate, expired, cross-task, or stale approvals shall be rejected. The plugin shall not enable automatic approval merely to bypass an SDK limitation.
+Approval requests shall be persisted with request ID, proposed action, scope, task/turn binding, expiry, and decision state. Decisions shall be checked against the trusted runtime-derived owner and the current conversation's interpreted request or confirmation, whether invoked through `user-control`, `/codex`, or `/codex-user`. Duplicate, expired, cross-task, cross-owner, or stale approvals shall be rejected. The plugin shall not enable blanket automatic approval merely to bypass an SDK limitation.
 
 ### FR-09 — Permission enforcement
 

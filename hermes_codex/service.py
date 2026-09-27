@@ -245,7 +245,7 @@ class Service(Controls):
             return self.store.put(owner, 'proposal', key, {'id': key, 'brief': brief, 'digest': digest, 'provider': self.settings(owner)['provider'], 'account': self.selected_account(owner), 'authorized': False})
 
     def authorize(self, owner, proposal_id):
-        """Only called by a direct user slash-command boundary; never a model tool."""
+        """Authorize a proposal for this runtime-derived owner; callers may be conversational or slash controls."""
         with self.lock:
             proposal = self.store.get(owner, 'proposal', proposal_id)
             from .access import validate, identity
@@ -679,7 +679,7 @@ class Service(Controls):
         return (not self.stop.is_set() and live and attempt['thread'] == request['thread'] and attempt['turn'] == request['turn'])
 
     def decide(self, owner, request_id, decision):
-        """Trusted direct-user boundary only. Never register as a model tool."""
+        """Resolve a live approval for this runtime-derived owner after expiry and binding checks."""
         if decision not in {'accept', 'acceptForSession', 'decline', 'cancel'}:
             raise ValueError('Unsupported approval decision')
         with self.store.lock:
@@ -697,7 +697,7 @@ class Service(Controls):
             return sanitized(request)
 
     def answer(self, owner, request_id, action, *, question=None, answers=None):
-        """Direct user input; answering a question never grants approval."""
+        """Resolve user input for this runtime-derived owner; answering never grants approval."""
         with self.store.lock:
             request = self.store.get(owner, 'interaction', request_id)
             if request['method'] != 'item/tool/requestUserInput' or request['state'] != 'pending':

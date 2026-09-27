@@ -221,6 +221,26 @@ class FakeService:
         self.calls.append(('decide', owner, request, decision))
         return {'id': request, 'state': decision}
 
+    def control(self, owner, action, payload):
+        self.calls.append(('control', owner, action, payload))
+        return {'id': 'control-1', 'action': action, 'state': 'pending'}
+
+    def native_review(self, owner, task, target, delivery):
+        self.calls.append(('native-review', owner, task, target, delivery))
+        return {'task': task, 'target': target}
+
+    def plan_action(self, owner, key, action, revision=None):
+        self.calls.append(('plan', owner, key, action, revision))
+        return {'id': key, 'state': action}
+
+    def queue_action(self, owner, task, action, key=None):
+        self.calls.append(('queue', owner, task, action, key))
+        return {'task': task, 'state': action}
+
+    def answer(self, owner, key, action, question=None, answers=None):
+        self.calls.append(('input', owner, key, action, question, answers))
+        return {'id': key, 'state': action}
+
 
 class EasyCommandTests(unittest.TestCase):
     def setUp(self):
@@ -250,6 +270,8 @@ class EasyCommandTests(unittest.TestCase):
         self.assertIn('codex.workflow', self.ctx.sections)
         guidance = self.ctx.sections['codex.workflow']
         self.assertIn('codex', guidance.lower())
+        self.assertIn('user-control', guidance)
+        self.assertNotIn('never authorize', guidance.lower())
         self.assertIn('codex', self.ctx.commands)
 
     def test_model_can_discover_current_work_without_user_ids(self):
@@ -257,6 +279,80 @@ class EasyCommandTests(unittest.TestCase):
         result = json.loads(self.ctx.tools['codex']['handler']({'action': 'list'}))
         self.assertTrue(result['success'], result)
         self.assertEqual(result['data']['tasks'][0]['id'], TASK_ID)
+
+    def test_help_advertises_model_access_to_all_user_controls(self):
+        result = json.loads(self.ctx.tools['codex']['handler']({'action': 'help'}))
+        self.assertTrue(result['success'], result)
+        self.assertEqual(set(result['data']['model_user_control_operations']), {
+            'show', 'native-review', 'plan', 'control', 'followup',
+            'queue', 'input', 'authorize', 'decide',
+        })
+        self.assertEqual(result['data']['user_control_envelope']['payload']['operation'], '<operation>')
+        self.assertEqual(result['data']['user_controls']['authorize']['required'], ['id'])
+        self.assertEqual(result['data']['examples']['input-edit']['payload']['arguments']['action'], 'edit')
+        self.assertIn('authorize a proposal before submit', result['data']['sequencing'])
+        self.assertEqual(result['data']['user_controls']['native-review'], {
+            'required': ['delivery', 'target', 'task'], 'optional': []})
+        self.assertEqual(result['data']['user_controls']['followup'], {
+            'required': ['key', 'task', 'text'], 'optional': []})
+        self.assertEqual(result['data']['user_controls']['queue'], {
+            'required': ['action', 'task'], 'optional': ['id']})
+        description = self.ctx.tools['codex']['schema']['parameters']['properties']['payload']['description']
+        self.assertIn('{"operation":"authorize","arguments":{"id":"<proposal-id>"}}', description)
+
+    def test_model_can_open_task_without_printing_direct_user_command(self):
+        result = json.loads(self.ctx.tools['codex']['handler']({
+            'action': 'user-control',
+            'payload': {'operation': 'control', 'arguments': {
+                'action': 'open', 'payload': {'task': TASK_ID},
+            }},
+        }))
+        self.assertTrue(result['success'], result)
+        self.assertEqual(result['data']['action'], 'open')
+        self.assertEqual(self.service.calls[-1][0], 'control')
+        self.assertEqual(self.service.calls[-1][2:], ('open', {'task': TASK_ID}))
+
+    def test_model_can_follow_up_without_printing_direct_user_command(self):
+        result = json.loads(self.ctx.tools['codex']['handler']({
+            'action': 'user-control',
+            'payload': {'operation': 'followup', 'arguments': {
+                'task': TASK_ID, 'key': 'continue-1', 'text': 'Continue integration tests',
+            }},
+        }))
+        self.assertTrue(result['success'], result)
+        self.assertEqual(result['data']['state'], 'queued')
+        self.assertEqual(self.service.calls[-1][0], 'followup')
+        self.assertEqual(self.service.calls[-1][2:],
+                         (TASK_ID, 'continue-1', 'Continue integration tests'))
+
+    def test_model_can_invoke_every_direct_user_operation(self):
+        cases = {
+            'show': {'kind': 'result', 'id': TASK_ID},
+            'native-review': {'task': TASK_ID, 'target': {'type': 'uncommittedChanges'}, 'delivery': 'inline'},
+            'plan': {'id': 'plan-1', 'action': 'confirm'},
+            'queue': {'task': TASK_ID, 'action': 'clear'},
+            'input': {'id': 'input-1', 'action': 'edit', 'question': 'choice', 'answers': ['yes']},
+            'authorize': {'id': 'proposal-1'},
+            'decide': {'id': 'request-1', 'decision': 'accept'},
+        }
+        for operation, arguments in cases.items():
+            with self.subTest(operation=operation):
+                result = json.loads(self.ctx.tools['codex']['handler']({
+                    'action': 'user-control',
+                    'payload': {'operation': operation, 'arguments': arguments},
+                }))
+                self.assertTrue(result['success'], result)
+
+    def test_model_user_control_rejects_unknown_extra_and_forged_owner(self):
+        tool = self.ctx.tools['codex']['handler']
+        cases = [
+            {'action': 'user-control', 'payload': {'operation': 'unknown', 'arguments': {}}},
+            {'action': 'user-control', 'payload': {'operation': 'authorize', 'arguments': {'id': 'p', 'extra': True}}},
+            {'action': 'user-control', 'owner': 'forged', 'payload': {'operation': 'authorize', 'arguments': {'id': 'p'}}},
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                self.assertFalse(json.loads(tool(payload))['success'])
 
     def test_approve_without_id_starts_the_only_pending_proposal(self):
         self.service.store.documents['proposal'] = [
