@@ -284,7 +284,8 @@ class PluginReviewTests(unittest.TestCase):
                     # unknown/missing keys never fall back to local injection.
                     ctx._manager._cli_ref = None
                     fields.update(HERMES_SESSION_ID='gateway-one', HERMES_SESSION_SOURCE='telegram',
-                                  HERMES_SESSION_PLATFORM='telegram', HERMES_SESSION_USER_ID='user', HERMES_SESSION_KEY='gateway-route')
+                                  HERMES_SESSION_PLATFORM='telegram', HERMES_SESSION_USER_ID='user',
+                                  HERMES_SESSION_CHAT_ID='chat', HERMES_SESSION_KEY='gateway-route')
                     gateway_owner, _ = plugin.current_scope()
                     self.assertTrue(json.loads(tool({'action': 'help'}))['success'])
                     self.assertTrue(hosts[0].notify(gateway_owner, 'gateway completion'))
@@ -292,7 +293,7 @@ class PluginReviewTests(unittest.TestCase):
                     fields['HERMES_SESSION_KEY'] = ''
                     unroutable, _ = plugin.current_scope()
                     tool({'action': 'help'})
-                    self.assertFalse(hosts[0].notify(unroutable, 'no route'))
+                    self.assertTrue(hosts[0].notify(unroutable, 'preserve established route'))
                     ctx._manager._cli_ref = SimpleNamespace(session_id='gateway-one')
                     self.assertFalse(hosts[0].notify(gateway_owner, 'must not go to CLI'))
                 finally:

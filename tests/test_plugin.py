@@ -11,6 +11,7 @@ class Context:
         self.root = root
         self.tools = {}
         self.commands = {}
+        self.sections = {}
         self.cleanups = []
 
     def get_config(self, key, default=None):
@@ -21,6 +22,9 @@ class Context:
 
     def register_command(self, name, handler, **kwargs):
         self.commands[name] = handler
+
+    def register_system_prompt_section(self, id, content, **kwargs):
+        self.sections[id] = content
 
     def on_unload(self, handler):
         self.cleanups.append(handler)

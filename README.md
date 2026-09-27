@@ -7,7 +7,8 @@ A security-scoped [Hermes Agent](https://hermes-agent.nousresearch.com/) plugin 
 ## What it provides
 
 - Model-facing Hermes tool: `codex`
-- Direct-user authorization command: `/codex-user`
+- Simple direct-user controls: `/codex status`, `/codex approve`, `/codex continue`, `/codex result`, and `/codex cancel`
+- Advanced compatibility command: `/codex-user`
 - Read-only and workspace-write assignments with explicit roots
 - Proposal → direct authorization → submission workflow
 - Durable task status, events, paged results, follow-ups, cancellation, approvals, plans, reviews, goals, and attachments
@@ -94,79 +95,85 @@ Use absolute, existing, non-symlink paths. Restart the profile gateway and send 
 
 `allow_full_access: true` is only an operator availability gate. A full-access proposal is still rejected unless `/` itself is in `allowed_roots`, the assignment explicitly requests `/`, unrestricted networking is authorized, and the direct user authorizes that exact proposal.
 
-## Connect an existing Codex account
+## Everyday use
 
-Link the configured `default` host account without copying credentials:
+Talk to Hermes normally. The plugin adds workflow guidance so Hermes discovers current Codex work, calls the `codex` tool, follows asynchronous controls, and summarizes results without exposing internal JSON.
+
+Examples:
+
+```text
+Show me what the current Codex task is doing.
+Continue the current Codex task and run the regression tests.
+Inspect the existing Codex threads for /projects/my-app.
+Ask Codex to fix the login bug in /projects/my-app. Do not commit or deploy.
+```
+
+For write-capable work Hermes creates an exact scoped proposal. Confirm once:
+
+```text
+/codex approve
+```
+
+Approval starts the task immediately. An ID is needed only when several proposals or tasks are eligible.
+
+## Simple `/codex` controls
+
+```text
+/codex                         # current work and next actions
+/codex status                  # latest active task
+/codex approve                 # approve and start the only pending proposal
+/codex continue <instruction>  # continue the current task
+/codex result                  # latest result page
+/codex events                  # recent durable events
+/codex cancel                  # cancel the current task
+/codex list                    # concise task/proposal summary
+```
+
+Add a task/proposal ID only to disambiguate, for example:
+
+```text
+/codex status <task-id>
+/codex approve <proposal-id>
+/codex continue <task-id> run the focused tests again
+```
+
+The plugin never guesses when more than one authorization target is available.
+
+## One-time account setup
+
+Link the operator-configured `default` Codex home without copying credentials into the plugin:
 
 ```text
 /codex-user control {"action":"account","payload":{"operation":"sync-host","name":"default"}}
 ```
 
-The command returns a control job ID. Ask Hermes to call `codex` with `action: control-status` for that ID. When ready, select it:
+Then ask Hermes to check the control job and switch to the ready account, or use the advanced compatibility command:
 
 ```text
 /codex-user control {"action":"account","payload":{"operation":"switch","name":"default"}}
 ```
 
-## See existing Codex threads
+`/codex-user` remains available for advanced controls and compatibility. Routine task use should prefer natural chat and `/codex`.
 
-List native threads from the selected Codex home without starting a model turn:
+## Existing Codex threads
 
-```text
-/codex-user control {"action":"import-catalog","payload":{"archived":false,"limit":20}}
-```
-
-Poll the returned job with `codex` action `control-status`. To import an idle thread, create and directly authorize a proposal whose workspace exactly matches the thread `cwd`, then run:
+Ask Hermes naturally:
 
 ```text
-/codex-user control {"action":"thread-import","payload":{"proposal":"<proposal-id>","thread":"<thread-id>"}}
+Show my current Codex threads and summarize what each is doing.
+Continue the idle thread for /projects/my-app and inspect the failing tests.
 ```
 
-Active native threads are visible in the catalog but cannot be imported while a turn is running.
-
-## Start a worker assignment
-
-Ask Hermes naturally, for example:
-
-```text
-Use the codex tool to inspect /projects/my-app in read-only mode. Do not use
-network access or modify files. Create a proposal for my authorization first.
-```
-
-Hermes returns a proposal ID. Authorize the exact proposal directly:
-
-```text
-/codex-user authorize <proposal-id>
-```
-
-Then ask Hermes to submit it with the `codex` tool. Submission may start a billable model turn.
-
-For workspace writes, explicitly authorize the workspace as a write root:
-
-```text
-Use the codex tool to fix the bug in /projects/my-app with workspace-write,
-write only inside /projects/my-app, keep network disabled, run relevant tests,
-and do not commit, push, merge, or deploy. Create a proposal first.
-```
-
-## Common controls
-
-```text
-/codex-user decide <request-id> <accept|acceptForSession|decline|cancel>
-/codex-user followup {"task":"<task-id>","key":"fix-1","text":"Fix the confirmed findings"}
-/codex-user control {"action":"snapshot","payload":{"task":"<task-id>"}}
-/codex-user control {"action":"open","payload":{"task":"<task-id>"}}
-/codex-user plan {"id":"<plan-id>","action":"confirm"}
-```
+Hermes uses read-only inspection and bounded control polling. Importing an idle native thread still requires an exact workspace proposal and direct confirmation. Active native threads can be inspected but are not imported while a turn is running.
 
 Model-facing `codex` actions include:
 
 ```text
-help, diagnostics, propose, submit, status, events, result, result-page,
+help, list, diagnostics, propose, submit, status, events, result, result-page,
 cancel, review, interactions, queue, inspect, control-status, present
 ```
 
-Control commands are asynchronous. Poll their job IDs using `codex` action `control-status`. Worker output is untrusted until Hermes independently verifies the resulting files, diff, and tests.
+Worker output remains untrusted until Hermes independently verifies resulting files, diffs, and tests.
 
 ## Development
 

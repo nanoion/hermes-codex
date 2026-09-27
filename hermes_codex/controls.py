@@ -147,7 +147,8 @@ class Controls:
             if account['provider'] != self.task_provider(owner, task):
                 raise Denied('Account and task provider differ')
             return account_home(self, owner, route['account'])
-        base = self.home / 'workers' / hashlib.sha256(owner.encode()).hexdigest()
+        storage_owner = route.get('storage_owner', owner)
+        base = self.home / 'workers' / hashlib.sha256(storage_owner.encode()).hexdigest()
         provider = self.task_provider(owner, task)
         if provider != 'default':
             base = base / ('provider-' + hashlib.sha256(provider.encode()).hexdigest())

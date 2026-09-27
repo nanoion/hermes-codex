@@ -21,7 +21,8 @@ def account_home(service, owner, account):
         if canonical != record.get('host_home'):
             raise Denied('Named host account path changed; use a new alias, never retarget saved tasks')
         return Path(canonical)
-    return service.home / 'accounts' / hashlib.sha256(owner.encode()).hexdigest() / record['id']
+    storage_owner = record.get('storage_owner', owner)
+    return service.home / 'accounts' / hashlib.sha256(storage_owner.encode()).hexdigest() / record['id']
 
 
 def idle(service, owner):

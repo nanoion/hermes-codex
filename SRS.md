@@ -111,13 +111,13 @@ Using an SDK-managed app-server process is compatible with the Python SDK requir
 
 ### UC-01 — Delegate a scoped engineering task
 
-1. User requests work through Hermes.
-2. Hermes defines scope, constraints, permissions, and acceptance criteria.
-3. Hermes obtains any required approval.
+1. User requests work through normal Hermes conversation.
+2. Hermes discovers relevant scoped Codex work or defines scope, constraints, permissions, and acceptance criteria.
+3. For write-capable work, Hermes prepares an exact proposal and requests one short direct-user confirmation.
 4. Plugin validates the workspace, ownership, configuration, and readiness.
-5. Plugin durably records the assignment and returns a task identifier.
+5. Plugin durably records the assignment and returns a task identifier without requiring the user to manage it.
 6. Codex executes; Hermes remains available for conversation and control.
-7. Plugin records progress and produces a worker result.
+7. Hermes follows bounded status/event/result pagination and summarizes the evidence.
 8. Hermes verifies actual artifacts and reports accepted work, required corrections, or a blocker.
 
 ### UC-02 — Continue or correct work
@@ -162,7 +162,9 @@ Missing mandatory fields shall produce validation errors before worker execution
 
 ### FR-04 — Task and thread ownership
 
-The plugin shall bind every task to the originating Hermes profile, session, and available user/channel identity, plus workspace, Codex thread, and turn identifiers. These identities shall come from trusted runtime context, not worker text or caller-supplied ownership claims. Access outside the authorized scope shall be denied.
+The plugin shall bind every task to a canonical scope derived from the active Hermes profile, platform, trusted user, chat, conversation type, and thread identity, plus workspace, Codex thread, and turn identifiers. A slash command and a later model-facing tool call in the same trusted conversation shall resolve to that same canonical scope even when their transient Hermes session IDs differ. Different profiles, platforms, users, chats, and threads shall remain isolated; group/channel contexts shall not inherit DM ownership. These identities shall come from trusted runtime context, not worker text or caller-supplied ownership claims. Access outside the authorized scope shall be denied. Legacy session-bound records may be migrated only through an exact derived alias, atomically and without relocating or losing their credential, worker-thread, or attachment storage.
+
+Routine use shall support natural conversation and context-sensitive `/codex` controls. Task/proposal IDs may be omitted only when the eligible target is unique; mutating commands shall present a choice instead of guessing when multiple targets remain. The model-facing tool shall never grant authorization or approve permission escalation.
 
 ### FR-05 — Non-blocking execution
 

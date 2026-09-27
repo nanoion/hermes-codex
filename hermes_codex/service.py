@@ -51,6 +51,54 @@ class WorkflowStore(Store):
           attempt TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
         ''')
 
+    def has_owner(self, owner):
+        """Whether durable state exists for exactly this opaque owner token."""
+        with self.lock:
+            return any(self.db.execute(f'SELECT 1 FROM {table} WHERE owner=? LIMIT 1', (owner,)).fetchone()
+                       for table in ('tasks', 'documents', 'events', 'reviews'))
+
+    def migrate_owner(self, source, target):
+        """Atomically merge an exactly-derived legacy namespace into its canonical owner."""
+        if not source or source == target:
+            return
+        with self.transaction():
+            document_collision = self.db.execute(
+                '''SELECT 1 FROM documents old JOIN documents new
+                   ON new.owner=? AND new.kind=old.kind AND new.id=old.id
+                   WHERE old.owner=? AND (new.value<>old.value OR old.kind IN ('account','route')) LIMIT 1''',
+                (target, source)).fetchone()
+            task_collision = self.db.execute(
+                '''SELECT 1 FROM tasks old JOIN tasks new
+                   ON new.owner=? AND new.idem=old.idem
+                   WHERE old.owner=? AND new.id<>old.id LIMIT 1''', (target, source)).fetchone()
+            if document_collision or task_collision:
+                raise Conflict('Legacy ownership migration has conflicting records; resolve explicitly')
+            for row in self.db.execute("SELECT id,value FROM documents WHERE owner=? AND kind='account'", (source,)):
+                value = json.loads(row['value'])
+                if not value.get('host_alias'):
+                    value.setdefault('storage_owner', source)
+                    self.db.execute("UPDATE documents SET value=? WHERE owner=? AND kind='account' AND id=?",
+                                    (encoded(value), source, row['id']))
+            task_ids = [row['id'] for row in self.db.execute('SELECT id FROM tasks WHERE owner=?', (source,))]
+            for task_id in task_ids:
+                row = self.db.execute("SELECT value FROM documents WHERE owner=? AND kind='route' AND id=?",
+                                      (source, task_id)).fetchone()
+                route = json.loads(row['value']) if row else {'provider': 'default', 'account': None}
+                route.setdefault('storage_owner', source)
+                self.db.execute("INSERT INTO documents VALUES(?,?,?,?) ON CONFLICT(owner,kind,id) DO UPDATE SET value=excluded.value",
+                                (source, 'route', task_id, encoded(route)))
+            self.db.execute('DELETE FROM documents WHERE owner=? AND EXISTS '
+                            '(SELECT 1 FROM documents new WHERE new.owner=? AND new.kind=documents.kind '
+                            'AND new.id=documents.id AND new.value=documents.value)', (source, target))
+            for table in ('tasks', 'documents', 'events', 'reviews'):
+                self.db.execute(f'UPDATE {table} SET owner=? WHERE owner=?', (target, source))
+
+    def tasks(self, owner):
+        with self.lock:
+            rows = self.db.execute('SELECT * FROM tasks WHERE owner=? ORDER BY created DESC,id DESC',
+                                   (owner,)).fetchall()
+            return [self.task(owner, row['id']) for row in rows]
+
     def get(self, owner, kind, key):
         with self.lock:
             row = self.db.execute('SELECT value FROM documents WHERE owner=? AND kind=? AND id=?', (owner, kind, key)).fetchone()

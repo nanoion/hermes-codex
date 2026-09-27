@@ -34,6 +34,7 @@ with tempfile.TemporaryDirectory(prefix='hermes-codex-registration-') as directo
     original_config = ctx.get_config
     ctx.get_config = lambda key, default=None: [directory] if key == 'allowed_roots' else original_config(key, default)
     register(ctx)
+    assert 'codex' in manager._plugin_commands
     assert 'codex-user' in manager._plugin_commands
     tokens = set_session_vars(source='cli', session_id='registration-test', profile='isolated-test')
     try:
@@ -41,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix='hermes-codex-registration-') as directo
         result = json.loads(ctx.dispatch_tool('codex', {'action': 'help'}))
         assert result['success'], result
         print('Actual PluginContext registration and scoped tool dispatch: PASS')
-        print('Registered direct-user command:', 'codex-user')
+        print('Registered direct-user commands: codex, codex-user')
         hosts = []
         def factory(*a, **kw):
             hosts.append(Service(*a, **kw, transport_factory=Transport))
