@@ -178,6 +178,7 @@ class FakeService:
     def __init__(self):
         self.store = FakeStore()
         self.calls = []
+        self.host_account_homes = {'default': '/home/test/.codex'}
 
     def close(self):
         pass
@@ -203,6 +204,8 @@ class FakeService:
 
     def status(self, owner, task):
         self.calls.append(('status', owner, task))
+        if task == '01a0d634-df3c-73b0-b202-c47e969c3a86':
+            raise Denied('Task unavailable in this ownership scope')
         return {'id': task, 'state': 'running'}
 
     def followup(self, owner, task, key, text):
@@ -235,6 +238,14 @@ class FakeService:
     def control(self, owner, action, payload):
         self.calls.append(('control', owner, action, payload))
         return {'id': 'control-1', 'action': action, 'state': 'pending'}
+
+    def control_status(self, owner, key):
+        self.calls.append(('control-status', owner, key))
+        return {'id': key, 'state': 'completed', 'result': {
+            'thread': {'id': '01a0d634-df3c-73b0-b202-c47e969c3a86',
+                       'status': {'type': 'notLoaded'}},
+            'read_only': True, 'turns_omitted': 443,
+        }}
 
     def native_review(self, owner, task, target, delivery):
         self.calls.append(('native-review', owner, task, target, delivery))
@@ -292,6 +303,17 @@ class EasyCommandTests(unittest.TestCase):
         self.assertIn('Codex session/thread ID', guidance)
         self.assertNotIn('never authorize', guidance.lower())
         self.assertIn('codex', self.ctx.commands)
+
+    def test_unknown_task_uuid_status_falls_back_to_native_follow_deterministically(self):
+        native = '01a0d634-df3c-73b0-b202-c47e969c3a86'
+        result = json.loads(self.ctx.tools['codex']['handler']({'action': 'status', 'id': native}))
+        self.assertTrue(result['success'], result)
+        self.assertEqual(result['data']['thread']['id'], native)
+        self.assertTrue(result['data']['read_only'])
+        self.assertTrue(any(
+            call[0] == 'control' and call[2:] == ('native-follow', {
+                'thread': native, 'host_alias': 'default'})
+            for call in self.service.calls), self.service.calls)
 
     def test_model_can_discover_current_work_without_user_ids(self):
         self.service.store.task_rows = [{'id': TASK_ID, 'state': 'running', 'created': 1}]

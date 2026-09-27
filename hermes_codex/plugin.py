@@ -2,6 +2,7 @@
 import hashlib
 import json
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -430,6 +431,45 @@ def register(ctx):
             payload = args['payload']
             svc.store.review(owner, args['id'], payload['decision'], payload['evidence'])
             return svc.status(owner, args['id'])
+        if action == 'status':
+            task = args['id']
+            try:
+                return svc.status(owner, task)
+            except Denied:
+                # Native Codex thread IDs and hermes-codex task IDs are both
+                # UUIDs. Make model misrouting deterministic and safe: only an
+                # exact canonical UUID not visible as a task may fall back to
+                # the read-only native-follow operation.
+                try:
+                    parsed = uuid.UUID(task)
+                except (ValueError, AttributeError, TypeError):
+                    raise
+                if str(parsed) != task:
+                    raise
+                homes = getattr(svc, 'host_account_homes', {})
+                alias = 'default' if 'default' in homes else (
+                    next(iter(homes)) if len(homes) == 1 else None)
+                if alias is None:
+                    raise
+                job = svc.control(owner, 'native-follow', {
+                    'thread': task, 'host_alias': alias})
+                deadline = time.monotonic() + 120
+                while job.get('state') not in {'completed', 'failed', 'cancelled'}:
+                    if time.monotonic() >= deadline:
+                        return {
+                            'kind': 'native-follow', 'thread': task,
+                            'control': job,
+                            'next': {'action': 'control-status', 'id': job['id']},
+                        }
+                    time.sleep(0.05)
+                    job = svc.control_status(owner, job['id'])
+                if job.get('state') == 'completed':
+                    return job.get('result') or {
+                        'kind': 'native-follow', 'thread': task,
+                        'read_only': True, 'control': job,
+                    }
+                error = job.get('error') or {}
+                raise Denied(error.get('message') or 'Native Codex session unavailable')
         return getattr(svc, action)(owner, args['id'])
 
     def locale():
