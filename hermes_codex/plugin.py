@@ -197,7 +197,44 @@ def register(ctx):
             return svc.plan_action(owner, arguments['id'], arguments['action'], arguments.get('revision'))
         if operation == 'control':
             fields({'action', 'payload'})
-            return svc.control(owner, arguments['action'], arguments['payload'])
+            action = arguments['action']
+            control_payload = arguments['payload']
+            if not isinstance(control_payload, dict):
+                raise ValueError('Control payload must be an object')
+            control_payload = dict(control_payload)
+            if action == 'native-follow':
+                if (set(control_payload) - {'thread', 'host_alias', 'source_task'}
+                        or 'thread' not in control_payload):
+                    raise ValueError('Invalid native-follow fields')
+                thread = control_payload.get('thread')
+                if isinstance(thread, str):
+                    try:
+                        parsed = uuid.UUID(thread)
+                        uuid_shaped = True
+                        canonical = str(parsed) == thread
+                    except ValueError:
+                        uuid_shaped = thread.strip() != thread or len(thread) == 36
+                        canonical = False
+                    # Preserve strict rejection for every UUID representation;
+                    # only ordinary names become a read-only catalog query.
+                    if not canonical and not uuid_shaped:
+                        action = 'native-find'
+                        control_payload = {
+                            'query': thread,
+                            **{key: control_payload[key]
+                               for key in ('host_alias', 'source_task')
+                               if key in control_payload},
+                        }
+            if action == 'native-find':
+                if (set(control_payload) - {'query', 'host_alias', 'source_task'}
+                        or 'query' not in control_payload):
+                    raise ValueError('Invalid native-find fields')
+            if action in {'native-follow', 'native-find'}:
+                homes = getattr(svc, 'host_account_homes', {})
+                if len(homes) == 1:
+                    control_payload.pop('source_task', None)
+                    control_payload['host_alias'] = next(iter(homes))
+            return svc.control(owner, action, control_payload)
         if operation == 'followup':
             fields({'task', 'key', 'text'})
             return svc.followup(owner, arguments['task'], arguments['key'], arguments['text'])
@@ -684,8 +721,10 @@ def register(ctx):
         '`control-status` with a bounded wait; for worker '
         'tasks, use `status`, `events`, and `result-page`, then summarize the evidence. A user-supplied Codex '
         'session/thread ID is not a hermes-codex task ID: never send it to task status/show. Use the asynchronous '
-        '`native-follow` control with an operator-configured host alias or owned source task, poll `control-status`, '
-        'and report its read-only runtime snapshot without importing or taking ownership. The exact envelope is '
+        '`native-follow` control for an exact UUID, or `native-find` for a session name/search. When exactly one '
+        'operator-configured host exists, omit source selectors and let the plugin use that default; never guess a '
+        'hostname or source task. Poll `control-status`, and report the read-only runtime snapshot without importing '
+        'or taking ownership. The exact envelope is '
         '`{"action":"user-control","payload":{"operation":"<operation>","arguments":{...}}}`. Call `help` '
         'for each operation’s required and optional fields. Authorize before submit; for structured input, edit '
         'every question before submit. Do not merely print a slash command for the user to copy. Prefer the '

@@ -315,6 +315,65 @@ class EasyCommandTests(unittest.TestCase):
                 'thread': native, 'host_alias': 'default'})
             for call in self.service.calls), self.service.calls)
 
+    def test_native_read_controls_use_the_only_operator_default_without_model_source_guessing(self):
+        native = '01a0d634-df3c-73b0-b202-c47e969c3a86'
+        result = json.loads(self.ctx.tools['codex']['handler']({
+            'action': 'user-control', 'payload': {
+                'operation': 'control', 'arguments': {
+                    'action': 'native-follow', 'payload': {
+                        'thread': native, 'host_alias': 'codex24.duckdns.org',
+                        'source_task': 'model-guessed-task'}}}}))
+        self.assertTrue(result['success'], result)
+        self.assertTrue(any(
+            call[0] == 'control' and call[2:] == ('native-follow', {
+                'thread': native, 'host_alias': 'default'})
+            for call in self.service.calls), self.service.calls)
+
+    def test_native_name_sent_to_follow_is_routed_to_find_on_default_host(self):
+        result = json.loads(self.ctx.tools['codex']['handler']({
+            'action': 'user-control', 'payload': {
+                'operation': 'control', 'arguments': {
+                    'action': 'native-follow', 'payload': {
+                        'thread': 'SRS Region Vision'}}}}))
+        self.assertTrue(result['success'], result)
+        self.assertTrue(any(
+            call[0] == 'control' and call[2:] == ('native-find', {
+                'query': 'SRS Region Vision', 'host_alias': 'default'})
+            for call in self.service.calls), self.service.calls)
+
+    def test_noncanonical_uuid_forms_are_not_normalized_into_name_searches(self):
+        canonical = '01a0d634-df3c-73b0-b202-c47e969c3a86'
+        for value in (canonical.replace('-', ''), '{' + canonical + '}', 'urn:uuid:' + canonical):
+            self.service.calls.clear()
+            result = json.loads(self.ctx.tools['codex']['handler']({
+                'action': 'user-control', 'payload': {
+                    'operation': 'control', 'arguments': {
+                        'action': 'native-follow', 'payload': {'thread': value}}}}))
+            self.assertTrue(result['success'], result)
+            self.assertEqual(self.service.calls[-1][2], 'native-follow')
+
+    def test_name_search_preserves_explicit_source_when_multiple_hosts_exist(self):
+        self.service.host_account_homes = {
+            'default': '/home/test/.codex', 'other': '/home/test/other'}
+        result = json.loads(self.ctx.tools['codex']['handler']({
+            'action': 'user-control', 'payload': {
+                'operation': 'control', 'arguments': {
+                    'action': 'native-follow', 'payload': {
+                        'thread': 'SRS Region Vision', 'host_alias': 'other'}}}}))
+        self.assertTrue(result['success'], result)
+        self.assertEqual(self.service.calls[-1][2:], ('native-find', {
+            'query': 'SRS Region Vision', 'host_alias': 'other'}))
+
+    def test_name_search_rejects_unknown_fields_before_normalization(self):
+        result = json.loads(self.ctx.tools['codex']['handler']({
+            'action': 'user-control', 'payload': {
+                'operation': 'control', 'arguments': {
+                    'action': 'native-follow', 'payload': {
+                        'thread': 'SRS Region Vision', 'owner': 'forged'}}}}))
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['code'], 'validation')
+        self.assertEqual(self.service.calls, [])
+
     def test_model_can_discover_current_work_without_user_ids(self):
         self.service.store.task_rows = [{'id': TASK_ID, 'state': 'running', 'created': 1}]
         result = json.loads(self.ctx.tools['codex']['handler']({'action': 'list'}))

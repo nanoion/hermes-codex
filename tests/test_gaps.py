@@ -93,6 +93,26 @@ class RemainingControlsTests(unittest.TestCase):
         with self.assertRaises(Denied):
             recovered.claim_host_alias('owner-c', 'default', home)
 
+    def test_native_find_uses_default_host_and_follows_unique_name_match(self):
+        self.svc.host_account_homes = {'default': str(self.root / 'host-home')}
+        (self.root / 'host-home').mkdir()
+        native_id = '01a0d634-df3c-73b0-b202-c47e969c3a86'
+        self.backend.thread.update(
+            id=native_id, name='วางแผน Implement SRS Region Vision',
+            cwd=str(self.root), status={'type': 'active'},
+            turns=[{'id': 'latest'}])
+
+        found = self.run_control('native-find', query='SRS Region Vision')
+
+        self.assertEqual(found['thread']['id'], native_id)
+        self.assertEqual(found['thread']['turns'][-1]['id'], 'latest')
+        self.assertEqual(found['matched_by'], 'name')
+        self.assertEqual(found['source'], 'operator-configured host account')
+        self.assertTrue(found['read_only'])
+        self.assertFalse(found['imported'])
+        self.assertFalse(any(method in {'thread/resume', 'turn/start', 'turn/steer'}
+                             for method, _ in self.backend.calls))
+
     def test_native_follow_reads_active_host_thread_without_importing_or_owning_it(self):
         self.svc.host_account_homes = {'approved-host': str(self.root / 'host-home')}
         (self.root / 'host-home').mkdir()

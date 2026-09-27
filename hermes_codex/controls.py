@@ -21,6 +21,7 @@ CONTROL_FIELDS = {
     'open': ({'task'}, set()),
     'thread-import': ({'proposal', 'thread'}, {'source_task'}),
     'native-follow': ({'thread'}, {'host_alias', 'source_task'}),
+    'native-find': ({'query'}, {'host_alias', 'source_task'}),
     'import-catalog': (set(), {'source_task', 'archived', 'limit', 'page'}),
     'reveal': ({'task'}, set()),
     'focus': ({'task'}, set()),
@@ -208,6 +209,56 @@ class Controls:
 
     def _control_action(self, owner, job, p):
         action = job['action']
+        if action == 'native-find':
+            query = text(p['query'], 'Native session query', 200)
+            alias, source_task = p.get('host_alias'), p.get('source_task')
+            if not alias and not source_task and 'default' in self.host_account_homes:
+                alias = 'default'
+            if bool(alias) == bool(source_task):
+                raise ValueError('Choose exactly one approved host alias or owned source task')
+            if alias:
+                alias = text(alias, 'Host alias', 100)
+                if alias not in self.host_account_homes:
+                    raise Denied('Named host account is not operator-configured')
+                from .policy import workspace_path
+                home = Path(workspace_path(self.host_account_homes[alias],
+                                           [self.host_account_homes[alias]]))
+                self.store.claim_host_alias(owner, alias, str(home))
+                source = 'operator-configured host account'
+            else:
+                home, _ = self.import_source(owner, source_task)
+                source = 'owned source task'
+            client = self.factory(home, approval_handler=self._deny_control)
+            try:
+                needle = query.casefold()
+                matches = [item for item in self.thread_catalog(client, False).values()
+                           if needle in str(item.get('name') or '').casefold()]
+                if not matches:
+                    raise Denied('No native session matches that name in the approved source home')
+                if len(matches) != 1:
+                    return {'matches': [{k: item.get(k) for k in ('id', 'name', 'cwd', 'status')}
+                                        for item in matches[:20]],
+                            'total': len(matches), 'read_only': True,
+                            'source': source, 'selection_required': True}
+                thread = self._thread_read(client, {'thread': matches[0]['id']})
+            finally:
+                client.close()
+            thread = dict(thread)
+            turns = thread.get('turns')
+            turns_omitted = max(0, len(turns) - 100) if isinstance(turns, list) else 0
+            if isinstance(turns, list):
+                bounded_turns = []
+                for turn in turns[-100:]:
+                    turn = dict(turn)
+                    items = turn.get('items')
+                    if isinstance(items, list) and len(items) > 100:
+                        turn['items_omitted'] = len(items) - 100
+                        turn['items'] = items[-100:]
+                    bounded_turns.append(turn)
+                thread['turns'] = bounded_turns
+            return {'thread': thread, 'turns_omitted': turns_omitted,
+                    'source': source, 'read_only': True, 'imported': False,
+                    'matched_by': 'name', 'status_source': 'runtime snapshot'}
         if action == 'native-follow':
             thread_id = p['thread']
             if not isinstance(thread_id, str):
