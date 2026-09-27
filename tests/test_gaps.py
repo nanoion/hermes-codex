@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hermes_codex.service import Service
+from hermes_codex.service import Service, WorkflowStore
 from hermes_codex.state import Store, Conflict, Denied
 from test_worker import brief, Transport
 import test_controls
@@ -74,6 +74,66 @@ class RemainingControlsTests(unittest.TestCase):
         self.assertEqual(self.svc.store.get(self.owner, 'route', imported['task'])['account'], self.svc.selected_account(self.owner))
         catalogue = self.run_control('import-catalog')
         self.assertEqual(catalogue['data'][0]['id'], 'unbound-history')
+
+    def test_legacy_host_accounts_backfill_claims_and_conflicts_fail_closed(self):
+        path = self.root / 'legacy-claims.sqlite3'
+        store = WorkflowStore(path)
+        home = str((self.root / 'legacy-home').resolve())
+        store.put('owner-a', 'account', 'a', {
+            'id': 'a', 'host_alias': 'default', 'host_home': home})
+        store.put('owner-b', 'account', 'b', {
+            'id': 'b', 'host_alias': 'alternate', 'host_home': home})
+        store.close()
+        recovered = WorkflowStore(path)
+        self.addCleanup(recovered.close)
+        with self.assertRaises(Denied):
+            recovered.claim_host_alias('owner-a', 'default', home)
+        with self.assertRaises(Denied):
+            recovered.claim_host_alias('owner-b', 'alternate', home)
+        with self.assertRaises(Denied):
+            recovered.claim_host_alias('owner-c', 'default', home)
+
+    def test_native_follow_reads_active_host_thread_without_importing_or_owning_it(self):
+        self.svc.host_account_homes = {'approved-host': str(self.root / 'host-home')}
+        (self.root / 'host-home').mkdir()
+        native_id = '01a0d634-df3c-73b0-b202-c47e969c3a86'
+        self.backend.thread.update(id=native_id, cwd=str(self.root),
+                                   status={'type': 'active'}, turns=[{'id': f'turn-{i}'} for i in range(105)])
+        followed = self.run_control('native-follow', thread=native_id, host_alias='approved-host')
+        self.assertEqual(followed['thread']['id'], native_id)
+        self.assertEqual(followed['thread']['status']['type'], 'active')
+        self.assertEqual(followed['turns_omitted'], 5)
+        self.assertEqual(followed['thread']['turns'][0]['id'], 'turn-5')
+        self.assertEqual(followed['thread']['turns'][-1]['id'], 'turn-104')
+        self.assertEqual(followed['source'], 'operator-configured host account')
+        self.assertEqual(self.svc.store.tasks(self.owner)[0]['id'], self.task)
+        self.assertFalse(any(method in {'thread/resume', 'turn/start', 'turn/steer'}
+                             for method, _ in self.backend.calls))
+        other_job = self.svc.control(
+            'another-owner', 'native-follow',
+            {'thread': native_id, 'host_alias': 'approved-host'})
+        for _ in range(100):
+            other = self.svc.control_status('another-owner', other_job['id'])
+            if other['state'] in {'completed', 'failed', 'unknown'}:
+                break
+            __import__('time').sleep(.01)
+        self.assertEqual(other['state'], 'failed')
+        self.svc.host_account_homes['same-home'] = str(self.root / 'host-home')
+        duplicate_home_job = self.svc.control(
+            'another-owner', 'native-follow',
+            {'thread': native_id, 'host_alias': 'same-home'})
+        for _ in range(100):
+            duplicate_home = self.svc.control_status('another-owner', duplicate_home_job['id'])
+            if duplicate_home['state'] in {'completed', 'failed', 'unknown'}:
+                break
+            __import__('time').sleep(.01)
+        self.assertEqual(duplicate_home['state'], 'failed')
+        denied = self.wait_job(self.svc.control(
+            self.owner, 'native-follow', {'thread': native_id, 'host_alias': 'unknown'}))
+        self.assertEqual(denied['state'], 'failed')
+        malformed = self.wait_job(self.svc.control(
+            self.owner, 'native-follow', {'thread': f' {native_id}', 'host_alias': 'approved-host'}))
+        self.assertEqual(malformed['state'], 'failed')
 
     def test_named_host_account_sync_reads_identity_without_copying_credentials(self):
         self.svc.host_account_homes = {'approved-host': str(self.root / 'host-home')}

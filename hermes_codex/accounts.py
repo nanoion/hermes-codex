@@ -18,6 +18,7 @@ def account_home(service, owner, account):
         if path is None:
             raise Denied('Named host account was removed from operator configuration')
         canonical = workspace_path(path, [path])
+        service.store.claim_host_alias(owner, record['host_alias'], canonical)
         if canonical != record.get('host_home'):
             raise Denied('Named host account path changed; use a new alias, never retarget saved tasks')
         return Path(canonical)
@@ -58,6 +59,7 @@ def control(service, owner, job, p):
             raise Denied('Only an operator-configured named host home can be synchronized while idle')
         from .policy import workspace_path
         path = workspace_path(service.host_account_homes[name], [service.host_account_homes[name]])
+        service.store.claim_host_alias(owner, name, path)
         if record.get('host_home', path) != path:
             raise Denied('Named host account path changed; use a new alias')
         record.update(host_alias=name, host_home=path)

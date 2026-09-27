@@ -9,6 +9,7 @@ A security-scoped [Hermes Agent](https://hermes-agent.nousresearch.com/) plugin 
 - Model-facing Hermes tool: `codex`
 - Simple direct-user controls: `/codex status`, `/codex approve`, `/codex continue`, `/codex result`, and `/codex cancel`
 - Advanced compatibility command: `/codex-user`
+- Native Codex session/thread IDs are followed read-only with `native-follow`; they are never misrouted as hermes-codex task IDs or implicitly imported
 - Read-only and workspace-write assignments with explicit roots
 - Proposal → native Hermes choice popup → conversational authorization → submission workflow
 - Durable task status, events, paged results, follow-ups, cancellation, approvals, plans, reviews, goals, and attachments

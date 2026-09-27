@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 
 from .state import Conflict, Denied
 
@@ -19,6 +20,7 @@ CONTROL_FIELDS = {
     'provider-select': ({'provider'}, set()),
     'open': ({'task'}, set()),
     'thread-import': ({'proposal', 'thread'}, {'source_task'}),
+    'native-follow': ({'thread'}, {'host_alias', 'source_task'}),
     'import-catalog': (set(), {'source_task', 'archived', 'limit', 'page'}),
     'reveal': ({'task'}, set()),
     'focus': ({'task'}, set()),
@@ -206,6 +208,54 @@ class Controls:
 
     def _control_action(self, owner, job, p):
         action = job['action']
+        if action == 'native-follow':
+            thread_id = p['thread']
+            if not isinstance(thread_id, str):
+                raise ValueError('Thread must be a canonical UUID')
+            try:
+                canonical = str(uuid.UUID(thread_id))
+            except ValueError:
+                raise ValueError('Thread must be a canonical UUID') from None
+            if canonical != thread_id:
+                raise ValueError('Thread must be a canonical UUID')
+            alias, source_task = p.get('host_alias'), p.get('source_task')
+            if bool(alias) == bool(source_task):
+                raise ValueError('Choose exactly one approved host alias or owned source task')
+            if alias:
+                alias = text(alias, 'Host alias', 100)
+                if alias not in self.host_account_homes:
+                    raise Denied('Named host account is not operator-configured')
+                from .policy import workspace_path
+                home = Path(workspace_path(self.host_account_homes[alias],
+                                           [self.host_account_homes[alias]]))
+                self.store.claim_host_alias(owner, alias, str(home))
+                source = 'operator-configured host account'
+            else:
+                home, _ = self.import_source(owner, source_task)
+                source = 'owned source task'
+            client = self.factory(home, approval_handler=self._deny_control)
+            try:
+                if thread_id not in self.thread_catalog(client, False):
+                    raise Denied('Native thread is not available in the approved source home')
+                thread = self._thread_read(client, {'thread': thread_id})
+            finally:
+                client.close()
+            thread = dict(thread)
+            turns = thread.get('turns')
+            turns_omitted = max(0, len(turns) - 100) if isinstance(turns, list) else 0
+            if isinstance(turns, list):
+                bounded_turns = []
+                for turn in turns[-100:]:
+                    turn = dict(turn)
+                    items = turn.get('items')
+                    if isinstance(items, list) and len(items) > 100:
+                        turn['items_omitted'] = len(items) - 100
+                        turn['items'] = items[-100:]
+                    bounded_turns.append(turn)
+                thread['turns'] = bounded_turns
+            return {'thread': thread, 'turns_omitted': turns_omitted,
+                    'source': source, 'read_only': True,
+                    'imported': False, 'status_source': 'runtime snapshot'}
         if action == 'import-catalog':
             home, route = self.import_source(owner, p.get('source_task'))
             archived, limit = p.get('archived', False), p.get('limit', 20)

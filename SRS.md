@@ -1,6 +1,6 @@
 # Software Requirements Specification — hermes-codex
 
-- **Document version:** 0.4
+- **Document version:** 0.4.1
 - **Status:** Draft for stakeholder review; not implementation approval
 - **Project:** `/projects/hermes-codex`
 - **Product:** Hermes plugin integrating Codex through the Python SDK

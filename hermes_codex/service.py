@@ -49,7 +49,48 @@ class WorkflowStore(Store):
         CREATE TABLE IF NOT EXISTS events(
           cursor INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, task TEXT NOT NULL,
           attempt TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS host_claims(
+          alias TEXT PRIMARY KEY, owner TEXT NOT NULL, home TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS host_claims_home ON host_claims(home);
+        CREATE TABLE IF NOT EXISTS host_claim_conflicts(
+          kind TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(kind,value));
         ''')
+        for row in self.db.execute(
+            "SELECT owner,value FROM documents WHERE kind='account' ORDER BY owner,id").fetchall():
+            account = json.loads(row['value'])
+            if account.get('host_alias') and account.get('host_home'):
+                try:
+                    self.claim_host_alias(row['owner'], account['host_alias'], account['host_home'])
+                except Denied:
+                    pass
+
+    def claim_host_alias(self, owner, alias, home):
+        """First trusted owner/home claim wins; conflicts fail closed for all owners."""
+        conflict = False
+        with self.transaction():
+            blocked = self.db.execute(
+                '''SELECT 1 FROM host_claim_conflicts
+                   WHERE (kind='alias' AND value=?) OR (kind='home' AND value=?) LIMIT 1''',
+                (alias, home)).fetchone()
+            rows = self.db.execute(
+                'SELECT alias,owner,home FROM host_claims WHERE alias=? OR home=?',
+                (alias, home)).fetchall()
+            exact = any(row['alias'] == alias and row['owner'] == owner and row['home'] == home
+                        for row in rows)
+            if blocked:
+                conflict = True
+            elif not rows:
+                self.db.execute('INSERT INTO host_claims VALUES(?,?,?)', (alias, owner, home))
+            elif not exact or len(rows) != 1:
+                affected_aliases = {alias, *(row['alias'] for row in rows)}
+                affected_homes = {home, *(row['home'] for row in rows)}
+                self.db.executemany(
+                    'INSERT OR IGNORE INTO host_claim_conflicts VALUES(?,?)',
+                    [('alias', value) for value in affected_aliases] +
+                    [('home', value) for value in affected_homes])
+                conflict = True
+        if conflict:
+            raise Denied('Named host account has conflicting ownership; operator resolution required')
 
     def has_owner(self, owner):
         """Whether durable state exists for exactly this opaque owner token."""
@@ -92,6 +133,7 @@ class WorkflowStore(Store):
                             'AND new.id=documents.id AND new.value=documents.value)', (source, target))
             for table in ('tasks', 'documents', 'events', 'reviews'):
                 self.db.execute(f'UPDATE {table} SET owner=? WHERE owner=?', (target, source))
+            self.db.execute('UPDATE host_claims SET owner=? WHERE owner=?', (target, source))
 
     def tasks(self, owner):
         with self.lock:

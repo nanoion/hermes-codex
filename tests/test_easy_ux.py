@@ -288,6 +288,8 @@ class EasyCommandTests(unittest.TestCase):
         self.assertIn('pending_interactions', guidance)
         self.assertIn('pending_plans', guidance)
         self.assertIn('free-text', guidance)
+        self.assertIn('native-follow', guidance)
+        self.assertIn('Codex session/thread ID', guidance)
         self.assertNotIn('never authorize', guidance.lower())
         self.assertIn('codex', self.ctx.commands)
 
