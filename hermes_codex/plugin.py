@@ -177,6 +177,18 @@ def register(ctx):
     }
     actions = ['help', 'list', 'propose', 'submit', 'status', 'events', 'result', 'result-page', 'cancel', 'review', 'interactions', 'queue', 'control-status', 'inspect', 'present', 'diagnostics', 'user-control']
 
+    def await_read_control(svc, owner, job):
+        deadline = time.monotonic() + 120
+        while job.get('state') not in {'completed', 'failed', 'cancelled'}:
+            if time.monotonic() >= deadline:
+                raise Conflict('Read-only Codex lookup is still running; retry status shortly')
+            time.sleep(0.05)
+            job = svc.control_status(owner, job['id'])
+        if job.get('state') == 'completed':
+            return job.get('result') or {'control': job}
+        error = job.get('error') or {}
+        raise Denied(error.get('message') or 'Read-only Codex lookup failed')
+
     def dispatch_user_control(svc, owner, payload):
         if not isinstance(payload, dict) or set(payload) != {'operation', 'arguments'} or not isinstance(payload['arguments'], dict):
             raise ValueError('User control requires operation and arguments')
@@ -237,16 +249,7 @@ def register(ctx):
             job = svc.control(owner, action, control_payload)
             if action not in {'native-follow', 'native-find', 'threads'}:
                 return job
-            deadline = time.monotonic() + 120
-            while job.get('state') not in {'completed', 'failed', 'cancelled'}:
-                if time.monotonic() >= deadline:
-                    raise Conflict('Read-only Codex lookup is still running; retry status shortly')
-                time.sleep(0.05)
-                job = svc.control_status(owner, job['id'])
-            if job.get('state') == 'completed':
-                return job.get('result') or {'control': job}
-            error = job.get('error') or {}
-            raise Denied(error.get('message') or 'Read-only Codex lookup failed')
+            return await_read_control(svc, owner, job)
         if operation == 'followup':
             fields({'task', 'key', 'text'})
             return svc.followup(owner, arguments['task'], arguments['key'], arguments['text'])
@@ -451,7 +454,8 @@ def register(ctx):
             payload = args['payload']
             if not isinstance(payload, dict) or set(payload) != {'operation', 'arguments'} or payload['operation'] not in {'threads', 'models', 'settings', 'snapshot', 'providers', 'recovery'}:
                 raise Denied('Only read-only inspections are model-facing')
-            return svc.control(owner, payload['operation'], payload['arguments'])
+            return await_read_control(
+                svc, owner, svc.control(owner, payload['operation'], payload['arguments']))
         if action == 'control-status':
             return svc.control_status(owner, args['id'])
         if action == 'propose':

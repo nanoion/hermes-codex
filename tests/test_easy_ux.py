@@ -354,6 +354,16 @@ class EasyCommandTests(unittest.TestCase):
         self.assertTrue(result['data']['read_only'])
         self.assertTrue(any(call[0] == 'control-status' for call in self.service.calls))
 
+    def test_inspect_threads_returns_completed_result_in_one_tool_call(self):
+        result = json.loads(self.ctx.tools['codex']['handler']({
+            'action': 'inspect', 'payload': {
+                'operation': 'threads', 'arguments': {}}}))
+        self.assertTrue(result['success'], result)
+        self.assertEqual(
+            result['data']['thread']['id'],
+            '01a0d634-df3c-73b0-b202-c47e969c3a86')
+        self.assertTrue(result['data']['read_only'])
+
     def test_noncanonical_uuid_forms_are_not_normalized_into_name_searches(self):
         canonical = '01a0d634-df3c-73b0-b202-c47e969c3a86'
         for value in (canonical.replace('-', ''), '{' + canonical + '}', 'urn:uuid:' + canonical):
