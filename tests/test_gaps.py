@@ -93,6 +93,96 @@ class RemainingControlsTests(unittest.TestCase):
         with self.assertRaises(Denied):
             recovered.claim_host_alias('owner-c', 'default', home)
 
+    def test_threads_search_includes_the_only_operator_default_native_catalog(self):
+        self.svc.host_account_homes = {'default': str(self.root / 'host-home')}
+        (self.root / 'host-home').mkdir()
+        native_id = '01a0d634-df3c-73b0-b202-c47e969c3a86'
+        self.backend.thread.update(
+            id=native_id, name='วางแผน Implement SRS Region Vision',
+            cwd=str(self.root), status={'type': 'active'}, turns=[])
+
+        result = self.run_control('threads', search='SRS Region Vision')
+
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['data'][0]['thread'], native_id)
+        self.assertEqual(result['data'][0]['name'], 'วางแผน Implement SRS Region Vision')
+        self.assertTrue(result['data'][0]['native_read_only'])
+        self.assertFalse(result['data'][0]['current'])
+        self.assertEqual(result['source'], 'owned-and-default-native-threads')
+        self.assertFalse(any(method in {'thread/read', 'thread/resume', 'turn/start', 'turn/steer'}
+                             for method, _ in self.backend.calls))
+
+    def test_cached_native_thread_page_revalidates_host_claim(self):
+        home = str((self.root / 'host-home').resolve())
+        self.svc.host_account_homes = {'default': home}
+        Path(home).mkdir()
+        route = [self.svc.settings(self.owner)['provider'],
+                 self.svc.selected_account(self.owner), 'default', home]
+        token = 'native-page'
+        self.svc.store.claim_host_alias(self.owner, 'default', home)
+        self.svc.store.put(self.owner, 'thread-page', token, {
+            'data': [{'task': None, 'thread': 'native', 'name': 'Native',
+                      'native_read_only': True}],
+            'offset': 0, 'limit': 20, 'route': route,
+            'native_included': True,
+            'expires': __import__('time').time() + 300})
+        with self.assertRaises(Denied):
+            self.svc.store.claim_host_alias('another-owner', 'default', home)
+
+        denied = self.wait_job(self.svc.control(self.owner, 'threads', {'page': token}))
+
+        self.assertEqual(denied['state'], 'failed')
+
+    def test_native_catalog_denial_preserves_owned_thread_results(self):
+        home = str((self.root / 'host-home').resolve())
+        self.svc.host_account_homes = {'default': home}
+        Path(home).mkdir()
+        self.svc.store.claim_host_alias('another-owner', 'default', home)
+
+        result = self.run_control('threads')
+
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['data'][0]['task'], self.task)
+        self.assertTrue(result['native_source_unavailable'])
+        self.assertEqual(result['source'], 'owned-runtime-threads')
+
+    def test_invalid_default_native_home_preserves_owned_results(self):
+        self.svc.host_account_homes = {'default': 'relative-home'}
+
+        result = self.run_control('threads')
+
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['data'][0]['task'], self.task)
+        self.assertTrue(result['native_source_unavailable'])
+
+    def test_cached_owned_page_preserves_native_unavailable_status(self):
+        route = [self.svc.settings(self.owner)['provider'], self.svc.selected_account(self.owner)]
+        token = 'owned-page'
+        self.svc.store.put(self.owner, 'thread-page', token, {
+            'data': [{'task': self.task, 'thread': 'thread-1', 'name': 'Owned'}],
+            'offset': 0, 'limit': 20, 'route': route,
+            'native_included': False, 'native_source_unavailable': True,
+            'expires': __import__('time').time() + 300})
+
+        result = self.run_control('threads', page=token)
+
+        self.assertTrue(result['native_source_unavailable'])
+
+    def test_malformed_native_catalog_does_not_return_partial_native_rows(self):
+        self.svc.host_account_homes = {'default': str(self.root / 'host-home')}
+        (self.root / 'host-home').mkdir()
+        catalog = {
+            'thread-1': dict(self.backend.thread),
+            'valid-native': {'id': 'valid-native', 'name': 'Valid'},
+            'malformed-native': {'name': None, 'preview': None},
+        }
+        with patch.object(type(self.svc), 'thread_catalog', return_value=catalog):
+            result = self.run_control('threads')
+
+        self.assertTrue(result['native_source_unavailable'])
+        self.assertFalse(any(item.get('native_read_only') for item in result['data']))
+        self.assertTrue(any(item.get('task') == self.task for item in result['data']))
+
     def test_native_find_uses_default_host_and_follows_unique_name_match(self):
         self.svc.host_account_homes = {'default': str(self.root / 'host-home')}
         (self.root / 'host-home').mkdir()

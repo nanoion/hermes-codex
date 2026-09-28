@@ -976,13 +976,30 @@ class Controls:
 
     def _browse(self, owner, p):
         route = [self.settings(owner)['provider'], self.selected_account(owner)]
+        native_source = None
+        native_unavailable = False
+        if len(self.host_account_homes) == 1:
+            alias, configured_home = next(iter(self.host_account_homes.items()))
+            try:
+                from .policy import workspace_path
+                native_source = (alias, Path(workspace_path(configured_home, [configured_home])))
+                route.extend([alias, str(native_source[1])])
+            except Exception:
+                native_unavailable = True
         search, archived, limit = p.get('search', ''), p.get('archived', False), p.get('limit', 20)
+        native_included = False
         if not isinstance(search, str) or len(search) > 200 or type(archived) is not bool or type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('Invalid thread filter/page size')
         if p.get('page'):
             snapshot = self.store.get(owner, 'thread-page', p['page'])
             if snapshot['expires'] <= time.time() or snapshot.get('route') != route:
                 raise Conflict('Thread page expired or routing changed; refresh the list')
+            if snapshot.get('native_included'):
+                if not native_source:
+                    raise Denied('Native thread source is no longer approved')
+                self.store.claim_host_alias(owner, native_source[0], str(native_source[1]))
+                native_included = True
+            native_unavailable = bool(snapshot.get('native_source_unavailable'))
             if set(p) != {'page'}:
                 raise ValueError('Start a fresh list to change filters')
             data, offset, limit = snapshot['data'], snapshot['offset'], snapshot['limit']
@@ -1012,16 +1029,49 @@ class Controls:
                     continue
                 data.append({'task': binding['task'], 'thread': binding['thread'], 'name': name,
                              'archived': archived, 'status': thread.get('status'), 'turns': thread.get('turns', [])[-3:]})
+            if native_source:
+                alias, home = native_source
+                try:
+                    self.store.claim_host_alias(owner, alias, str(home))
+                    client = self.factory(home, approval_handler=self._deny_control)
+                    try:
+                        catalog = self.thread_catalog(client, archived)
+                    finally:
+                        client.close()
+                    known = {item['thread'] for item in data}
+                    native_rows = []
+                    for thread in catalog.values():
+                        thread_id = thread['id']
+                        name = thread.get('name') or thread.get('preview') or ''
+                        if (thread_id in known
+                                or search.casefold() not in (name + ' ' + thread_id).casefold()):
+                            continue
+                        native_rows.append({'task': None, 'thread': thread_id, 'name': name,
+                                            'archived': archived, 'status': thread.get('status'), 'turns': [],
+                                            'native_read_only': True})
+                    data.extend(native_rows)
+                    native_included = bool(native_rows)
+                except Exception:
+                    native_unavailable = True
         try:
             selected = self.store.get(owner, 'selection', 'current')
         except Denied:
             selected = {}
-        result = [item | {'current': item['task'] == selected.get('task')} for item in data[offset:offset + limit]]
+        result = [item | {'current': bool(item.get('task')) and item['task'] == selected.get('task')}
+                  for item in data[offset:offset + limit]]
         tokens = {}
         for label, new_offset in [('next', offset + limit), ('previous', offset - limit)]:
             tokens[label] = None
             if 0 <= new_offset < len(data):
                 token = str(uuid.uuid4())
-                self.store.put(owner, 'thread-page', token, {'data': data, 'offset': new_offset, 'limit': limit, 'route': route, 'expires': time.time() + 300})
+                self.store.put(owner, 'thread-page', token, {
+                    'data': data, 'offset': new_offset, 'limit': limit,
+                    'route': route, 'native_included': native_included,
+                    'native_source_unavailable': native_unavailable,
+                    'expires': time.time() + 300})
                 tokens[label] = token
-        return {'data': result, **tokens, 'total': len(data), 'source': 'owned-runtime-threads', 'snapshot': True}
+        return {'data': result, **tokens, 'total': len(data),
+                'source': ('owned-and-default-native-threads' if native_included
+                           else 'owned-runtime-threads'),
+                'native_source_unavailable': native_unavailable,
+                'snapshot': True}
