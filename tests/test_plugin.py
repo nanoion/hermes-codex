@@ -59,13 +59,7 @@ class PluginTests(unittest.TestCase):
                     self.assertFalse(json.loads(tool({'action': 'control', 'payload': {'action': 'settings-set'}}))['success'])
                     control = json.loads(ctx.commands['codex-user']('control ' + json.dumps({'action': 'threads', 'payload': {}})))
                     self.assertTrue(control['success'], control)
-                    import time
-                    for _ in range(100):
-                        state = json.loads(tool({'action': 'control-status', 'id': control['data']['id']}))
-                        if state.get('data', {}).get('state') == 'completed':
-                            break
-                        time.sleep(.01)
-                    self.assertEqual(state['data']['result']['data'], [])
+                    self.assertEqual(control['data']['data'], [])
                     bad = json.loads(ctx.commands['codex-user']('control ' + json.dumps({'action': 'threads', 'payload': {'owner': 'forged'}})))
                     self.assertFalse(bad['success'])
                     cancelled = json.loads(tool({'action': 'propose', 'payload': brief(root / 'project', key='cancel-me')}))

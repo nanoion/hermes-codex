@@ -341,6 +341,19 @@ class EasyCommandTests(unittest.TestCase):
                 'query': 'SRS Region Vision', 'host_alias': 'default'})
             for call in self.service.calls), self.service.calls)
 
+    def test_native_name_sent_to_follow_returns_completed_read_result_in_one_tool_call(self):
+        result = json.loads(self.ctx.tools['codex']['handler']({
+            'action': 'user-control', 'payload': {
+                'operation': 'control', 'arguments': {
+                    'action': 'native-follow', 'payload': {
+                        'thread': 'SRS Region Vision'}}}}))
+        self.assertTrue(result['success'], result)
+        self.assertEqual(
+            result['data']['thread']['id'],
+            '01a0d634-df3c-73b0-b202-c47e969c3a86')
+        self.assertTrue(result['data']['read_only'])
+        self.assertTrue(any(call[0] == 'control-status' for call in self.service.calls))
+
     def test_noncanonical_uuid_forms_are_not_normalized_into_name_searches(self):
         canonical = '01a0d634-df3c-73b0-b202-c47e969c3a86'
         for value in (canonical.replace('-', ''), '{' + canonical + '}', 'urn:uuid:' + canonical):
@@ -350,7 +363,8 @@ class EasyCommandTests(unittest.TestCase):
                     'operation': 'control', 'arguments': {
                         'action': 'native-follow', 'payload': {'thread': value}}}}))
             self.assertTrue(result['success'], result)
-            self.assertEqual(self.service.calls[-1][2], 'native-follow')
+            control_call = next(call for call in self.service.calls if call[0] == 'control')
+            self.assertEqual(control_call[2], 'native-follow')
 
     def test_name_search_preserves_explicit_source_when_multiple_hosts_exist(self):
         self.service.host_account_homes = {
@@ -361,7 +375,8 @@ class EasyCommandTests(unittest.TestCase):
                     'action': 'native-follow', 'payload': {
                         'thread': 'SRS Region Vision', 'host_alias': 'other'}}}}))
         self.assertTrue(result['success'], result)
-        self.assertEqual(self.service.calls[-1][2:], ('native-find', {
+        control_call = next(call for call in self.service.calls if call[0] == 'control')
+        self.assertEqual(control_call[2:], ('native-find', {
             'query': 'SRS Region Vision', 'host_alias': 'other'}))
 
     def test_name_search_rejects_unknown_fields_before_normalization(self):

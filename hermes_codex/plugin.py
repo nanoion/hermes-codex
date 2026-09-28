@@ -234,7 +234,19 @@ def register(ctx):
                 if len(homes) == 1:
                     control_payload.pop('source_task', None)
                     control_payload['host_alias'] = next(iter(homes))
-            return svc.control(owner, action, control_payload)
+            job = svc.control(owner, action, control_payload)
+            if action not in {'native-follow', 'native-find', 'threads'}:
+                return job
+            deadline = time.monotonic() + 120
+            while job.get('state') not in {'completed', 'failed', 'cancelled'}:
+                if time.monotonic() >= deadline:
+                    raise Conflict('Read-only Codex lookup is still running; retry status shortly')
+                time.sleep(0.05)
+                job = svc.control_status(owner, job['id'])
+            if job.get('state') == 'completed':
+                return job.get('result') or {'control': job}
+            error = job.get('error') or {}
+            raise Denied(error.get('message') or 'Read-only Codex lookup failed')
         if operation == 'followup':
             fields({'task', 'key', 'text'})
             return svc.followup(owner, arguments['task'], arguments['key'], arguments['text'])
